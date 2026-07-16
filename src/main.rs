@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -236,6 +237,14 @@ struct HotloadCommand {
     /// Agent receiving the hot-loaded update.
     #[arg(long)]
     agent: String,
+
+    /// Current running component version.
+    #[arg(long, default_value = "1.0.0")]
+    current: String,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
 
     /// Component reference such as skill:handle_refund@2.0.1.
     component: String,
@@ -726,12 +735,207 @@ fn outdated(command: ManifestCommand) -> Result<()> {
 }
 
 fn hotload(command: HotloadCommand) -> Result<()> {
+    let component = ComponentRef::parse(&command.component)?;
+    let classification = classify_hotload(&component, &command.current)?;
+
+    if command.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agent": command.agent,
+                "component": component,
+                "current": command.current,
+                "classification": classification,
+            }))?
+        );
+        return if classification.action == HotloadAction::Hotload {
+            Ok(())
+        } else {
+            bail!("component is not hot-loadable")
+        };
+    }
+
+    println!("Hot-load check for agent {}", command.agent);
     println!(
-        "Hot-load requested for agent {} with component {}",
-        command.agent, command.component
+        "{}:{} {} -> {}",
+        component.kind, component.name, command.current, component.version
     );
-    println!("Compatibility classification is stubbed until PR 7.");
-    Ok(())
+    println!("{} - {}", classification.action, classification.reason);
+
+    if classification.action == HotloadAction::Hotload {
+        Ok(())
+    } else {
+        bail!("component is not hot-loadable")
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComponentRef {
+    kind: ComponentKind,
+    name: String,
+    version: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ComponentKind {
+    Tool,
+    Skill,
+    Subagent,
+    Channel,
+    Approval,
+    Eval,
+    Memory,
+    Runtime,
+}
+
+#[derive(Debug, Serialize)]
+struct HotloadClassification {
+    action: HotloadAction,
+    reason: String,
+    update: UpdateKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum HotloadAction {
+    Hotload,
+    Restart,
+    Redeploy,
+    Migration,
+    Deny,
+}
+
+impl std::fmt::Display for ComponentKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            ComponentKind::Tool => "tool",
+            ComponentKind::Skill => "skill",
+            ComponentKind::Subagent => "subagent",
+            ComponentKind::Channel => "channel",
+            ComponentKind::Approval => "approval",
+            ComponentKind::Eval => "eval",
+            ComponentKind::Memory => "memory",
+            ComponentKind::Runtime => "runtime",
+        };
+        formatter.write_str(value)
+    }
+}
+
+impl std::fmt::Display for HotloadAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            HotloadAction::Hotload => "hotload",
+            HotloadAction::Restart => "restart",
+            HotloadAction::Redeploy => "redeploy",
+            HotloadAction::Migration => "migration",
+            HotloadAction::Deny => "deny",
+        };
+        formatter.write_str(value)
+    }
+}
+
+impl ComponentRef {
+    fn parse(value: &str) -> Result<Self> {
+        let (kind, rest) = value
+            .split_once(':')
+            .with_context(|| format!("component ref '{value}' must look like kind:name@version"))?;
+        let (name, version) = rest
+            .rsplit_once('@')
+            .with_context(|| format!("component ref '{value}' must include @version"))?;
+        let kind = parse_component_kind(kind)?;
+        ensure_slug(name)?;
+        Ok(Self {
+            kind,
+            name: name.to_string(),
+            version: version.to_string(),
+        })
+    }
+}
+
+fn parse_component_kind(value: &str) -> Result<ComponentKind> {
+    match value {
+        "tool" => Ok(ComponentKind::Tool),
+        "skill" => Ok(ComponentKind::Skill),
+        "subagent" => Ok(ComponentKind::Subagent),
+        "channel" => Ok(ComponentKind::Channel),
+        "approval" => Ok(ComponentKind::Approval),
+        "eval" => Ok(ComponentKind::Eval),
+        "memory" => Ok(ComponentKind::Memory),
+        "runtime" => Ok(ComponentKind::Runtime),
+        _ => bail!("unknown component kind '{value}'"),
+    }
+}
+
+fn classify_hotload(component: &ComponentRef, current: &str) -> Result<HotloadClassification> {
+    let update = classify_version_change(current, &component.version);
+    let (action, reason) = match component.kind {
+        ComponentKind::Skill if update == UpdateKind::Patch => (
+            HotloadAction::Hotload,
+            "skill patch preserves trigger/tool/output contract by policy",
+        ),
+        ComponentKind::Eval if matches!(update, UpdateKind::Patch | UpdateKind::Minor) => (
+            HotloadAction::Hotload,
+            "eval additions are safe to hot-load",
+        ),
+        ComponentKind::Approval if update == UpdateKind::Patch => (
+            HotloadAction::Hotload,
+            "approval patch is treated as stricter policy metadata",
+        ),
+        ComponentKind::Channel if update == UpdateKind::Patch => (
+            HotloadAction::Restart,
+            "channel adapter patch requires process restart",
+        ),
+        ComponentKind::Tool if update == UpdateKind::Patch => (
+            HotloadAction::Redeploy,
+            "tool patches may alter side effects or schema and require redeploy",
+        ),
+        ComponentKind::Memory => (
+            HotloadAction::Migration,
+            "memory schema changes require migration",
+        ),
+        ComponentKind::Runtime => (HotloadAction::Redeploy, "runtime changes require redeploy"),
+        ComponentKind::Subagent => (
+            HotloadAction::Redeploy,
+            "subagent contract changes require redeploy",
+        ),
+        _ if update == UpdateKind::Major => (
+            HotloadAction::Redeploy,
+            "major updates require explicit redeploy",
+        ),
+        _ if update == UpdateKind::Invalid => (
+            HotloadAction::Deny,
+            "invalid version change cannot be classified",
+        ),
+        _ => (
+            HotloadAction::Redeploy,
+            "change is not eligible for conservative hot-load",
+        ),
+    };
+
+    Ok(HotloadClassification {
+        action,
+        reason: reason.to_string(),
+        update,
+    })
+}
+
+fn classify_version_change(current: &str, next: &str) -> UpdateKind {
+    let Some(current) = current.parse::<Semver>().ok() else {
+        return UpdateKind::Invalid;
+    };
+    let Some(next) = next.parse::<Semver>().ok() else {
+        return UpdateKind::Invalid;
+    };
+    if current == next {
+        UpdateKind::Current
+    } else if current.major != next.major {
+        UpdateKind::Major
+    } else if current.minor != next.minor {
+        UpdateKind::Minor
+    } else {
+        UpdateKind::Patch
+    }
 }
 
 fn deploy(command: DeployCommand) -> Result<()> {
@@ -1067,15 +1271,26 @@ fn plan_generate_subagent(command: &GenerateNamed) -> Result<Vec<PlannedChange>>
 }
 
 fn plan_generate_migration(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
+    let timestamp = migration_timestamp();
     let path = PathBuf::from("agents")
         .join("migrations")
-        .join(format!("{}_{}.ts", "000000000000", command.name));
+        .join(format!("{}_{}.ts", timestamp, command.name));
     ensure_writable(&path, command.force)?;
     Ok(vec![PlannedChange {
         path,
         action: ChangeAction::Create,
-        content: "export async function up() {\n  // TODO: implement migration.\n}\n\nexport async function down() {\n  // TODO: implement rollback.\n}\n".to_string(),
+        content: format!(
+            "export const name = \"{}\";\n\nexport async function up() {{\n  // TODO: implement migration.\n}}\n\nexport async function down() {{\n  // TODO: implement rollback.\n}}\n",
+            command.name
+        ),
     }])
+}
+
+fn migration_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn catalog_section(kind: GeneratorKind) -> &'static str {
@@ -2669,6 +2884,59 @@ agents:
 
         assert!(lockfile.contains("catalog/tools/search_customers@1.0.0"));
         assert!(lockfile.contains("digest: fnv64:"));
+    }
+
+    #[test]
+    fn skill_patch_can_hotload() {
+        let component = ComponentRef::parse("skill:handle_refund@1.0.1").expect("component");
+        let classification = classify_hotload(&component, "1.0.0").expect("classification");
+
+        assert_eq!(classification.action, HotloadAction::Hotload);
+        assert_eq!(classification.update, UpdateKind::Patch);
+    }
+
+    #[test]
+    fn tool_patch_requires_redeploy() {
+        let component = ComponentRef::parse("tool:prepare_refund@1.0.1").expect("component");
+        let classification = classify_hotload(&component, "1.0.0").expect("classification");
+
+        assert_eq!(classification.action, HotloadAction::Redeploy);
+    }
+
+    #[test]
+    fn memory_change_requires_migration() {
+        let component = ComponentRef::parse("memory:customer_profile@1.0.1").expect("component");
+        let classification = classify_hotload(&component, "1.0.0").expect("classification");
+
+        assert_eq!(classification.action, HotloadAction::Migration);
+    }
+
+    #[test]
+    fn approval_major_update_cannot_hotload() {
+        let component = ComponentRef::parse("approval:money_movement@2.0.0").expect("component");
+        let classification = classify_hotload(&component, "1.0.0").expect("classification");
+
+        assert_eq!(classification.action, HotloadAction::Redeploy);
+        assert_eq!(classification.update, UpdateKind::Major);
+    }
+
+    #[test]
+    fn migration_generator_plans_timestamped_file() {
+        let command = generate_command(
+            "add_customer_tier",
+            PathBuf::from("manifests/agents.yml"),
+            PathBuf::from("manifests/catalog.yml"),
+        );
+        let changes = plan_generate(GeneratorKind::Migration, &command).expect("plan");
+
+        assert_eq!(changes.len(), 1);
+        assert!(
+            changes[0]
+                .path
+                .to_string_lossy()
+                .contains("add_customer_tier")
+        );
+        assert!(changes[0].content.contains("export async function up()"));
     }
 
     #[test]
