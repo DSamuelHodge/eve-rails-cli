@@ -1035,7 +1035,7 @@ fn init(command: InitCommand) -> Result<()> {
 }
 
 fn init_changes(command: &InitCommand, root: &Path) -> Vec<PlannedChange> {
-    vec![
+    let mut changes = vec![
         PlannedChange {
             path: root.join("README.md"),
             action: change_action(&root.join("README.md")),
@@ -1067,22 +1067,45 @@ fn init_changes(command: &InitCommand, root: &Path) -> Vec<PlannedChange> {
             action: change_action(&root.join("manifests").join("environments.yml")),
             content: "environments:\n  development:\n    observability: false\n  production:\n    observability: true\n    required_env: []\n    required_secrets: []\n    required_connections: []\n".to_string(),
         },
-        PlannedChange {
-            path: root.join("templates").join("agent").join("instructions.md.j2"),
-            action: change_action(&root.join("templates").join("agent").join("instructions.md.j2")),
-            content: include_str!("../templates/agent/instructions.md.j2").to_string(),
-        },
-        PlannedChange {
-            path: root.join("templates").join("agent").join("agent.ts.j2"),
-            action: change_action(&root.join("templates").join("agent").join("agent.ts.j2")),
-            content: include_str!("../templates/agent/agent.ts.j2").to_string(),
-        },
-        PlannedChange {
-            path: root.join("templates").join("agent").join("schedule.ts.j2"),
-            action: change_action(&root.join("templates").join("agent").join("schedule.ts.j2")),
-            content: include_str!("../templates/agent/schedule.ts.j2").to_string(),
-        },
-    ]
+    ];
+    for (name, content) in [
+        (
+            "instructions.md.j2",
+            include_str!("../templates/agent/instructions.md.j2"),
+        ),
+        ("agent.ts.j2", include_str!("../templates/agent/agent.ts.j2")),
+        ("tool.ts.j2", include_str!("../templates/agent/tool.ts.j2")),
+        ("skill.md.j2", include_str!("../templates/agent/skill.md.j2")),
+        (
+            "schedule.ts.j2",
+            include_str!("../templates/agent/schedule.ts.j2"),
+        ),
+        (
+            "approval.ts.j2",
+            include_str!("../templates/agent/approval.ts.j2"),
+        ),
+        ("eval.ts.j2", include_str!("../templates/agent/eval.ts.j2")),
+        (
+            "memory.ts.j2",
+            include_str!("../templates/agent/memory.ts.j2"),
+        ),
+        (
+            "fixture.json.j2",
+            include_str!("../templates/agent/fixture.json.j2"),
+        ),
+        (
+            "agent.README.md.j2",
+            include_str!("../templates/agent/agent.README.md.j2"),
+        ),
+    ] {
+        let path = root.join("templates").join("agent").join(name);
+        changes.push(PlannedChange {
+            action: change_action(&path),
+            path,
+            content: content.to_string(),
+        });
+    }
+    changes
 }
 
 fn doctor(command: DoctorCommand) -> Result<()> {
