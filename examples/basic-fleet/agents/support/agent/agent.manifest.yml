@@ -2,7 +2,7 @@
 name: support
 version: 1.0.0
 owner: agent-platform
-model: openai/gpt-5.5
+model: xai/grok-4.5
 responsibility: "Resolve customer support requests."
 uses:
   tools:

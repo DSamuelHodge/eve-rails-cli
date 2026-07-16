@@ -6,7 +6,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 export default defineTool({
-  description: "Generated read tool contract.",
+  description: "Generated lookup_policy read tool contract.",
   inputSchema: z.object({}),
   async execute() {
     return {

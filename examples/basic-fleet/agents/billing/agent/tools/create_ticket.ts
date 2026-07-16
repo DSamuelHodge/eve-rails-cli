@@ -6,7 +6,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 export default defineTool({
-  description: "Generated write tool contract.",
+  description: "Generated create_ticket write tool contract.",
   inputSchema: z.object({}),
   async execute() {
     return {

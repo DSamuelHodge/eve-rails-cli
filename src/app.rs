@@ -3144,7 +3144,7 @@ channels:
             .render_agent(&manifest.agents[0], &manifest, &catalog)
             .expect("agent renders");
 
-        assert_eq!(files.len(), 17);
+        assert_eq!(files.len(), 18);
         assert!(
             files
                 .iter()
@@ -3259,7 +3259,7 @@ channels:
             batch_plan(&manifest, &catalog, Path::new("templates/agent")).expect("batch plan");
 
         assert_eq!(manifest.agents.len(), 10);
-        assert_eq!(plan.operations.len(), 217);
+        assert_eq!(plan.operations.len(), 227);
     }
 
     #[test]

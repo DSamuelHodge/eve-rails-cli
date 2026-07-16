@@ -8,7 +8,7 @@ Owner: agent-platform
 
 Version: 1.0.0
 
-Model: openai/gpt-5.5
+Model: xai/grok-4.5
 
 ## Responsibility
 

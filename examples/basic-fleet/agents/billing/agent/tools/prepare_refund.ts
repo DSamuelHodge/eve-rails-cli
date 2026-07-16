@@ -6,7 +6,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 export default defineTool({
-  description: "Generated money tool contract.",
+  description: "Generated prepare_refund money tool contract.",
   inputSchema: z.object({}),
   async execute() {
     return {
