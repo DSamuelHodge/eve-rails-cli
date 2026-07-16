@@ -340,6 +340,10 @@ struct AgentCommand {
     #[arg(long, default_value = "manifests/catalog.yml")]
     catalog: PathBuf,
 
+    /// Path to the template directory.
+    #[arg(long, default_value = "templates/agent")]
+    template_dir: PathBuf,
+
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
@@ -366,6 +370,10 @@ struct GraphCommand {
     /// Path to the reusable component catalog.
     #[arg(long, default_value = "manifests/catalog.yml")]
     catalog: PathBuf,
+
+    /// Path to the template directory.
+    #[arg(long, default_value = "templates/agent")]
+    template_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -1138,6 +1146,136 @@ fn rollback_plan(
     })
 }
 
+#[derive(Debug, Serialize)]
+struct AgentSummary {
+    name: String,
+    version: String,
+    owner: Option<String>,
+    model: Option<String>,
+    responsibility: String,
+    tools: ComponentSummary,
+    skills: ComponentSummary,
+    subagents: Vec<String>,
+    channels: Vec<String>,
+    approvals: BTreeMap<String, String>,
+    evals: Vec<String>,
+    memory: ComponentSummary,
+    generated: GeneratedSummary,
+    deployment: DeploymentSummary,
+}
+
+type ComponentSummary = BTreeMap<String, String>;
+
+#[derive(Debug, Serialize)]
+struct GeneratedSummary {
+    manifest_path: PathBuf,
+    lockfile_path: PathBuf,
+    fresh: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DeploymentSummary {
+    doctor_passed: bool,
+    deployable: bool,
+}
+
+fn summarize_agent(
+    agent: &AgentManifest,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    template_dir: &Path,
+) -> Result<AgentSummary> {
+    let doctor_command = DoctorCommand {
+        all: false,
+        updates: true,
+        templates: true,
+        json: false,
+        manifest: PathBuf::from("manifests/agents.yml"),
+        catalog: PathBuf::from("manifests/catalog.yml"),
+        template_dir: template_dir.to_path_buf(),
+    };
+    let doctor = run_doctor(manifest, catalog, &doctor_command)?;
+    let generated = generated_summary(agent, manifest, catalog, template_dir)?;
+    let doctor_passed = !doctor.has_failures();
+
+    Ok(AgentSummary {
+        name: agent.name.clone(),
+        version: agent.version.clone().unwrap_or_else(|| "1.0.0".to_string()),
+        owner: agent
+            .owner
+            .clone()
+            .or_else(|| manifest.defaults.owner.clone()),
+        model: agent
+            .model
+            .clone()
+            .or_else(|| manifest.defaults.model.clone()),
+        responsibility: agent.responsibility.clone(),
+        tools: resolved_component_summary(&agent.tools, &catalog.tools),
+        skills: resolved_component_summary(&agent.skills, &catalog.skills),
+        subagents: agent.subagents.clone(),
+        channels: manifest
+            .defaults
+            .channels
+            .iter()
+            .chain(agent.channels.iter())
+            .cloned()
+            .collect(),
+        approvals: agent.approvals.clone(),
+        evals: effective_evals(agent, manifest),
+        memory: resolved_component_summary(&agent.memory, &catalog.memory),
+        generated,
+        deployment: DeploymentSummary {
+            doctor_passed,
+            deployable: doctor_passed && !effective_evals(agent, manifest).is_empty(),
+        },
+    })
+}
+
+fn generated_summary(
+    agent: &AgentManifest,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    template_dir: &Path,
+) -> Result<GeneratedSummary> {
+    let renderer = Renderer::load(template_dir)?;
+    let files = renderer.render_agent(agent, manifest, catalog)?;
+    let fresh = files.iter().try_fold(true, |fresh, file| {
+        Ok::<bool, anyhow::Error>(fresh && file_matches(&file.path, &file.content)?)
+    })?;
+    let output_root = PathBuf::from("agents").join(&agent.name).join("agent");
+    Ok(GeneratedSummary {
+        manifest_path: output_root.join("agent.manifest.yml"),
+        lockfile_path: output_root.join("versions.lock"),
+        fresh,
+    })
+}
+
+fn resolved_component_summary(
+    components: &ComponentMap,
+    catalog: &BTreeMap<String, CatalogComponent>,
+) -> ComponentSummary {
+    components
+        .iter()
+        .map(|(name, requested)| {
+            (
+                name.clone(),
+                resolve_version(requested, catalog.get(name)).unwrap_or_else(|| requested.clone()),
+            )
+        })
+        .collect()
+}
+
+fn format_components(components: &ComponentSummary) -> String {
+    if components.is_empty() {
+        return "<none>".to_string();
+    }
+    components
+        .iter()
+        .map(|(name, version)| format!("{name}@{version}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn deploy(command: DeployCommand) -> Result<()> {
     let manifest_path = command.fleet.as_deref().unwrap_or(&command.manifest);
     let manifest = load_manifest(manifest_path)?;
@@ -1218,54 +1356,33 @@ fn inspect(command: AgentCommand) -> Result<()> {
         .iter()
         .find(|agent| agent.name == command.agent)
         .with_context(|| format!("agent '{}' not found", command.agent))?;
+    let summary = summarize_agent(agent, &manifest, &catalog, &command.template_dir)?;
 
     if command.json {
-        let output = serde_json::json!({
-            "name": agent.name,
-            "version": agent.version.as_deref().unwrap_or("1.0.0"),
-            "owner": agent.owner.as_deref().or(manifest.defaults.owner.as_deref()),
-            "model": agent.model.as_deref().or(manifest.defaults.model.as_deref()),
-            "responsibility": agent.responsibility,
-            "tools": agent.tools,
-            "skills": agent.skills,
-            "subagents": agent.subagents,
-            "channels": agent.channels,
-            "approvals": agent.approvals,
-            "evals": agent.evals,
-            "memory": agent.memory,
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
 
-    println!("{}", agent.name);
-    println!("  version: {}", agent.version.as_deref().unwrap_or("1.0.0"));
+    println!("{}", summary.name);
+    println!("  version: {}", summary.version);
     println!(
         "  owner: {}",
-        agent
-            .owner
-            .as_deref()
-            .or(manifest.defaults.owner.as_deref())
-            .unwrap_or("<missing>")
+        summary.owner.as_deref().unwrap_or("<missing>")
     );
     println!(
         "  model: {}",
-        agent
-            .model
-            .as_deref()
-            .or(manifest.defaults.model.as_deref())
-            .unwrap_or("<missing>")
+        summary.model.as_deref().unwrap_or("<missing>")
     );
-    println!("  responsibility: {}", agent.responsibility);
-    println!("  tools: {}", agent.tools.len());
-    println!("  skills: {}", agent.skills.len());
-    println!("  subagents: {}", agent.subagents.len());
-    println!("  approvals: {}", agent.approvals.len());
-    println!(
-        "  evals: {}",
-        agent.evals.len() + manifest.defaults.evals.len()
-    );
-    println!("  memory: {}", agent.memory.len());
+    println!("  responsibility: {}", summary.responsibility);
+    println!("  tools: {}", format_components(&summary.tools));
+    println!("  skills: {}", format_components(&summary.skills));
+    println!("  subagents: {}", summary.subagents.join(", "));
+    println!("  channels: {}", summary.channels.join(", "));
+    println!("  approvals: {}", summary.approvals.len());
+    println!("  evals: {}", summary.evals.join(", "));
+    println!("  memory: {}", format_components(&summary.memory));
+    println!("  generated fresh: {}", summary.generated.fresh);
+    println!("  deployable: {}", summary.deployment.deployable);
     Ok(())
 }
 
@@ -1288,55 +1405,81 @@ fn graph(command: GraphCommand) -> Result<()> {
         bail!("pass --agent <name> or --all");
     };
 
+    let summaries = agents
+        .iter()
+        .map(|agent| summarize_agent(agent, &manifest, &catalog, &command.template_dir))
+        .collect::<Result<Vec<_>>>()?;
+
     match command.format {
         GraphFormat::Text => {
-            for agent in agents {
-                println!("{}", agent.name);
-                for subagent in &agent.subagents {
+            for summary in &summaries {
+                println!("{}", summary.name);
+                for subagent in &summary.subagents {
                     println!("  -> subagent/{subagent}");
                 }
-                for tool in agent.tools.keys() {
-                    println!("  -> tools/{tool}");
+                for (tool, version) in &summary.tools {
+                    println!("  -> tools/{tool}@{version}");
                 }
-                for skill in agent.skills.keys() {
-                    println!("  -> skills/{skill}");
+                for (skill, version) in &summary.skills {
+                    println!("  -> skills/{skill}@{version}");
                 }
-                for memory in agent.memory.keys() {
-                    println!("  -> memory/{memory}");
+                for channel in &summary.channels {
+                    println!("  -> channels/{channel}");
+                }
+                for eval in &summary.evals {
+                    println!("  -> evals/{eval}");
+                }
+                for (memory, version) in &summary.memory {
+                    println!("  -> memory/{memory}@{version}");
                 }
             }
         }
         GraphFormat::Mermaid => {
             println!("graph TD");
-            for agent in agents {
-                for subagent in &agent.subagents {
-                    println!("  {} --> subagent_{}", node(&agent.name), node(subagent));
+            for summary in &summaries {
+                let agent_node = format!("agent_{}", node(&summary.name));
+                println!("  {agent_node}[\"agent:{}\"]", summary.name);
+                for subagent in &summary.subagents {
+                    println!("  {agent_node} --> subagent_{}", node(subagent));
                 }
-                for tool in agent.tools.keys() {
-                    println!("  {} --> tool_{}", node(&agent.name), node(tool));
+                for (tool, version) in &summary.tools {
+                    println!(
+                        "  {agent_node} --> tool_{}[\"tool:{}@{}\"]",
+                        node(tool),
+                        tool,
+                        version
+                    );
                 }
-                for skill in agent.skills.keys() {
-                    println!("  {} --> skill_{}", node(&agent.name), node(skill));
+                for (skill, version) in &summary.skills {
+                    println!(
+                        "  {agent_node} --> skill_{}[\"skill:{}@{}\"]",
+                        node(skill),
+                        skill,
+                        version
+                    );
                 }
-                for memory in agent.memory.keys() {
-                    println!("  {} --> memory_{}", node(&agent.name), node(memory));
+                for channel in &summary.channels {
+                    println!(
+                        "  {agent_node} --> channel_{}[\"channel:{}\"]",
+                        node(channel),
+                        channel
+                    );
+                }
+                for eval in &summary.evals {
+                    println!("  {agent_node} --> eval_{}[\"eval:{}\"]", node(eval), eval);
+                }
+                for (memory, version) in &summary.memory {
+                    println!(
+                        "  {agent_node} --> memory_{}[\"memory:{}@{}\"]",
+                        node(memory),
+                        memory,
+                        version
+                    );
                 }
             }
         }
         GraphFormat::Json => {
-            let output: Vec<_> = agents
-                .iter()
-                .map(|agent| {
-                    serde_json::json!({
-                        "name": agent.name,
-                        "subagents": agent.subagents,
-                        "tools": agent.tools.keys().collect::<Vec<_>>(),
-                        "skills": agent.skills.keys().collect::<Vec<_>>(),
-                        "memory": agent.memory.keys().collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            println!("{}", serde_json::to_string_pretty(&summaries)?);
         }
     }
 
@@ -3267,6 +3410,35 @@ agents:
                 .as_deref()
                 .is_some_and(|reason| reason.contains("memory rollback"))
         );
+    }
+
+    #[test]
+    fn inspect_summary_includes_effective_runtime_state() {
+        let manifest = valid_manifest();
+        let summary = summarize_agent(
+            &manifest.agents[0],
+            &manifest,
+            &valid_catalog(),
+            Path::new("templates/agent"),
+        )
+        .expect("summary");
+
+        assert_eq!(summary.name, "billing");
+        assert_eq!(summary.channels, vec!["web".to_string()]);
+        assert_eq!(summary.evals, vec!["standard".to_string()]);
+        assert_eq!(
+            summary.tools.get("prepare_refund").map(String::as_str),
+            Some("1.0.0")
+        );
+        assert!(summary.generated.lockfile_path.ends_with("versions.lock"));
+    }
+
+    #[test]
+    fn format_components_is_dashboard_friendly() {
+        let mut components = BTreeMap::new();
+        components.insert("search_customers".to_string(), "1.0.0".to_string());
+
+        assert_eq!(format_components(&components), "search_customers@1.0.0");
     }
 
     fn deploy_command(require_doctor: bool, require_evals: bool) -> DeployCommand {
