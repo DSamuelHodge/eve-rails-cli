@@ -23,3 +23,8 @@ uses:
     - standard
     - tone
     - tool-selection
+runtime: eve@0.24.4
+compatibility:
+  hot_load: true
+  requires_restart: false
+  min_runtime: eve@0.24.4

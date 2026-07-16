@@ -1,0 +1,5 @@
+{
+  "name": "billing_smoke",
+  "kind": "smoke",
+  "description": "Generated smoke fixture for billing."
+}

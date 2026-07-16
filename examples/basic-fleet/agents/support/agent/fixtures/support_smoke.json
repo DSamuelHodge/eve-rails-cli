@@ -1,0 +1,5 @@
+{
+  "name": "support_smoke",
+  "kind": "smoke",
+  "description": "Generated smoke fixture for support."
+}

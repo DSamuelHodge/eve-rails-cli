@@ -1,6 +1,8 @@
 defaults:
   model: openai/gpt-5.5
   owner: agent-platform
+  auth: platform-oauth
+  visibility: internal
   channels: [web]
   schedules: []
   evals: [standard, tone, tool-selection]

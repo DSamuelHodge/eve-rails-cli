@@ -33,15 +33,20 @@ eve-rails-cli --help
 | Command | Example |
 | --- | --- |
 | ![help](https://img.shields.io/badge/help-reference-64748b) | `eve-rails-cli --help` |
+| ![init](https://img.shields.io/badge/init-project-0ea5e9) | `eve-rails-cli init my-fleet --template customer-support --dry-run` |
 | ![plan](https://img.shields.io/badge/plan-preview-2563eb) | `eve-rails-cli plan manifests/agents.yml` |
 | ![render](https://img.shields.io/badge/render-files-7c3aed) | `eve-rails-cli render --all --check` |
-| ![doctor](https://img.shields.io/badge/doctor-diagnostics-059669) | `eve-rails-cli doctor --all` |
+| ![doctor](https://img.shields.io/badge/doctor-diagnostics-059669) | `eve-rails-cli doctor --all --env production --connections --budgets` |
 | ![generate](https://img.shields.io/badge/generate-scaffold-f97316) | `eve-rails-cli generate agent support --dry-run` |
 | ![schedule](https://img.shields.io/badge/schedule-cron-9333ea) | `eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"` |
 | ![outdated](https://img.shields.io/badge/outdated-updates-eab308) | `eve-rails-cli outdated --agent support` |
 | ![update](https://img.shields.io/badge/update-versions-0891b2) | `eve-rails-cli update --agent support --minor` |
 | ![hotload](https://img.shields.io/badge/hotload-compatible-db2777) | `eve-rails-cli hotload --agent support --skill handle_refund@2.0.1` |
-| ![deploy](https://img.shields.io/badge/deploy-gates-16a34a) | `eve-rails-cli deploy --agent support --env staging --require-evals --require-doctor` |
+| ![eval](https://img.shields.io/badge/eval-delegate-9333ea) | `eve-rails-cli eval --agent support --dry-run` |
+| ![test](https://img.shields.io/badge/test-runtime-0284c7) | `eve-rails-cli test --agent support` |
+| ![preview](https://img.shields.io/badge/preview-dev-65a30d) | `eve-rails-cli preview --agent support --dry-run` |
+| ![migrate](https://img.shields.io/badge/migrate-plan-92400e) | `eve-rails-cli migrate --agent support --env production --dry-run` |
+| ![deploy](https://img.shields.io/badge/deploy-gates-16a34a) | `eve-rails-cli deploy --agent support --env staging --require-evals --require-doctor --dry-run` |
 | ![rollback](https://img.shields.io/badge/rollback-restore-dc2626) | `eve-rails-cli rollback --agent support --to 1.3.2` |
 | ![inspect](https://img.shields.io/badge/inspect-compose-4f46e5) | `eve-rails-cli inspect --agent support` |
 | ![graph](https://img.shields.io/badge/graph-map-0f766e) | `eve-rails-cli graph --all --format mermaid` |

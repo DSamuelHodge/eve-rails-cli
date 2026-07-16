@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -19,9 +21,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a Rails-style Eve Rails project skeleton.
+    Init(InitCommand),
     /// Show the files and components that would be generated from a manifest.
     Plan(ManifestCommand),
-    /// Apply a manifest by rendering files. Stubbed until PR 2.
+    /// Apply a manifest by rendering generated files.
     Apply(ManifestCommand),
     /// Render generated files from YAML and templates.
     Render(RenderCommand),
@@ -35,8 +39,16 @@ enum Command {
     Update(UpdateCommand),
     /// Hot-load a compatible component update.
     Hotload(HotloadCommand),
-    /// Run deploy preflight checks. Actual deployment delegates to Eve/Vercel later.
+    /// Run deploy gates and optionally delegate deployment to Eve/Vercel.
     Deploy(DeployCommand),
+    /// Delegate eval execution to Eve for a generated agent.
+    Eval(RuntimeCommand),
+    /// Run CLI checks plus generated-agent runtime checks.
+    Test(RuntimeCommand),
+    /// Preview a generated agent with Eve dev.
+    Preview(RuntimeCommand),
+    /// Plan or apply behavior and memory migrations.
+    Migrate(MigrateCommand),
     /// Plan rollback by agent or component version.
     Rollback(RollbackCommand),
     /// Inspect one agent's composition.
@@ -58,6 +70,40 @@ struct ManifestCommand {
     /// Path to the template directory.
     #[arg(long, default_value = "templates/agent")]
     templates: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct InitCommand {
+    /// Project directory to create.
+    name: String,
+
+    /// Starter template.
+    #[arg(long, default_value = "basic")]
+    template: String,
+
+    /// Default model for generated manifests.
+    #[arg(long, default_value = "openai/gpt-5.5")]
+    model: String,
+
+    /// Default owner for generated manifests.
+    #[arg(long, default_value = "agent-platform")]
+    owner: String,
+
+    /// Accept defaults without prompting.
+    #[arg(long)]
+    yes: bool,
+
+    /// Show planned changes without writing files.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Overwrite existing files.
+    #[arg(long)]
+    force: bool,
 
     /// Emit machine-readable JSON.
     #[arg(long)]
@@ -105,6 +151,22 @@ struct DoctorCommand {
     #[arg(long)]
     templates: bool,
 
+    /// Plan safe mechanical repairs.
+    #[arg(long)]
+    fix: bool,
+
+    /// Environment name from environments.yml.
+    #[arg(long)]
+    env: Option<String>,
+
+    /// Validate required connections and secrets for the selected environment.
+    #[arg(long)]
+    connections: bool,
+
+    /// Validate cost, token, and timeout budgets.
+    #[arg(long)]
+    budgets: bool,
+
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
@@ -120,6 +182,10 @@ struct DoctorCommand {
     /// Path to the template directory.
     #[arg(long, default_value = "templates/agent")]
     template_dir: PathBuf,
+
+    /// Path to environment policy config.
+    #[arg(long, default_value = "manifests/environments.yml")]
+    environments: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -335,9 +401,25 @@ struct DeployCommand {
     #[arg(long)]
     require_doctor: bool,
 
+    /// Require approval coverage before deployment.
+    #[arg(long)]
+    require_approvals: bool,
+
     /// Percentage of traffic for canary deployment.
     #[arg(long)]
     canary: Option<u8>,
+
+    /// Promote a previous or canary deployment.
+    #[arg(long)]
+    promote: bool,
+
+    /// Roll back to deployment id.
+    #[arg(long)]
+    rollback_to: Option<String>,
+
+    /// Show deploy gates and delegated command without invoking Eve.
+    #[arg(long)]
+    dry_run: bool,
 
     /// Path to the fleet manifest.
     #[arg(long, default_value = "manifests/agents.yml")]
@@ -350,6 +432,64 @@ struct DeployCommand {
     /// Path to the template directory.
     #[arg(long, default_value = "templates/agent")]
     template_dir: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RuntimeCommand {
+    /// Agent to run.
+    #[arg(long)]
+    agent: String,
+
+    /// Path to the fleet manifest.
+    #[arg(long, default_value = "manifests/agents.yml")]
+    manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
+    /// Environment name.
+    #[arg(long, default_value = "development")]
+    env: String,
+
+    /// Print command and checks without invoking long-running commands.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct MigrateCommand {
+    /// Agent to migrate.
+    #[arg(long)]
+    agent: Option<String>,
+
+    /// Fleet manifest to migrate.
+    #[arg(long)]
+    fleet: Option<PathBuf>,
+
+    /// Environment name.
+    #[arg(long, default_value = "staging")]
+    env: String,
+
+    /// Path to the fleet manifest.
+    #[arg(long, default_value = "manifests/agents.yml")]
+    manifest: PathBuf,
+
+    /// Apply migration status changes. Omit for dry-run plan.
+    #[arg(long)]
+    apply: bool,
+
+    /// Show migration plan without writing files.
+    #[arg(long)]
+    dry_run: bool,
 
     /// Emit machine-readable JSON.
     #[arg(long)]
@@ -449,6 +589,8 @@ struct FleetManifest {
     #[serde(default)]
     defaults: ManifestDefaults,
     #[serde(default)]
+    version_policy: VersionPolicy,
+    #[serde(default)]
     shared: SharedComponents,
     agents: Vec<AgentManifest>,
 }
@@ -457,6 +599,11 @@ struct FleetManifest {
 struct ManifestDefaults {
     model: Option<String>,
     owner: Option<String>,
+    auth: Option<String>,
+    visibility: Option<String>,
+    cost_budget: Option<f64>,
+    token_budget: Option<u64>,
+    timeout: Option<String>,
     #[serde(default)]
     channels: Vec<String>,
     #[serde(default)]
@@ -464,6 +611,25 @@ struct ManifestDefaults {
     #[serde(default)]
     evals: Vec<String>,
     approvals: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VersionPolicy {
+    default: Option<PolicyUpdateKind>,
+    approvals: Option<PolicyUpdateKind>,
+    memory: Option<PolicyUpdateKind>,
+    #[serde(default)]
+    tools: BTreeMap<String, PolicyUpdateKind>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum PolicyUpdateKind {
+    Pin,
+    Patch,
+    PatchAuto,
+    Minor,
+    Major,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -535,6 +701,45 @@ struct CatalogComponent {
     side_effects: Option<SideEffects>,
     retention: Option<String>,
     schedule: Option<String>,
+    owner: Option<String>,
+    auth: Option<String>,
+    visibility: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct EnvironmentsManifest {
+    #[serde(default)]
+    environments: BTreeMap<String, EnvironmentPolicy>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct EnvironmentPolicy {
+    #[serde(default)]
+    required_env: Vec<String>,
+    #[serde(default)]
+    required_secrets: Vec<String>,
+    #[serde(default)]
+    required_connections: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_observability")]
+    observability: Option<bool>,
+}
+
+fn deserialize_observability<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_yaml::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        serde_yaml::Value::Bool(value) => Ok(Some(value)),
+        serde_yaml::Value::String(value) => Ok(Some(matches!(
+            value.as_str(),
+            "required" | "enabled" | "verbose" | "true" | "yes"
+        ))),
+        _ => Ok(Some(false)),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -566,6 +771,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Init(command) => init(command),
         Command::Plan(command) => plan(command),
         Command::Apply(command) => apply(command),
         Command::Render(command) => render(command),
@@ -575,6 +781,10 @@ fn main() -> Result<()> {
         Command::Update(command) => update(command),
         Command::Hotload(command) => hotload(command),
         Command::Deploy(command) => deploy(command),
+        Command::Eval(command) => runtime_delegate(RuntimeKind::Eval, command),
+        Command::Test(command) => runtime_delegate(RuntimeKind::Test, command),
+        Command::Preview(command) => runtime_delegate(RuntimeKind::Preview, command),
+        Command::Migrate(command) => migrate(command),
         Command::Rollback(command) => rollback(command),
         Command::Inspect(command) => inspect(command),
         Command::Graph(command) => graph(command),
@@ -770,6 +980,103 @@ fn render(command: RenderCommand) -> Result<()> {
     Ok(())
 }
 
+fn init(command: InitCommand) -> Result<()> {
+    if command.template != "basic" && command.template != "customer-support" {
+        bail!(
+            "unknown template '{}'; expected basic or customer-support",
+            command.template
+        );
+    }
+    let root = PathBuf::from(&command.name);
+    let changes = init_changes(&command, &root);
+    for change in &changes {
+        ensure_writable(&change.path, command.force || command.dry_run)?;
+    }
+    if command.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "project": command.name,
+                "template": command.template,
+                "dry_run": command.dry_run,
+                "changes": changes.iter().map(|change| serde_json::json!({
+                    "path": change.path,
+                    "action": change.action,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+        return Ok(());
+    }
+    if command.dry_run {
+        println!("Init '{}' ({}) dry run", command.name, command.template);
+        for change in changes {
+            println!("{} {}", change_word(&change.action), change.path.display());
+        }
+        return Ok(());
+    }
+    for change in changes {
+        if let Some(parent) = change.path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create '{}'", parent.display()))?;
+        }
+        fs::write(&change.path, change.content)
+            .with_context(|| format!("failed to write '{}'", change.path.display()))?;
+        println!("{} {}", change_word(&change.action), change.path.display());
+    }
+    Ok(())
+}
+
+fn init_changes(command: &InitCommand, root: &Path) -> Vec<PlannedChange> {
+    vec![
+        PlannedChange {
+            path: root.join("README.md"),
+            action: change_action(&root.join("README.md")),
+            content: format!(
+                "# {}\n\nRails-style Eve Rails project generated by eve-rails-cli.\n",
+                command.name
+            ),
+        },
+        PlannedChange {
+            path: root.join(".gitignore"),
+            action: change_action(&root.join(".gitignore")),
+            content: "agents/*/node_modules/\nagents/*/.eve/\nagents/*/.output/\nagents/*/package-lock.json\n.env.*\n!.env.example\n".to_string(),
+        },
+        PlannedChange {
+            path: root.join("manifests").join("agents.yml"),
+            action: change_action(&root.join("manifests").join("agents.yml")),
+            content: format!(
+                "defaults:\n  model: {}\n  owner: {}\n  channels: []\n  schedules: []\n  evals: []\n\nagents:\n",
+                command.model, command.owner
+            ),
+        },
+        PlannedChange {
+            path: root.join("manifests").join("catalog.yml"),
+            action: change_action(&root.join("manifests").join("catalog.yml")),
+            content: default_catalog_yaml().to_string(),
+        },
+        PlannedChange {
+            path: root.join("manifests").join("environments.yml"),
+            action: change_action(&root.join("manifests").join("environments.yml")),
+            content: "environments:\n  development:\n    observability: false\n  production:\n    observability: true\n    required_env: []\n    required_secrets: []\n    required_connections: []\n".to_string(),
+        },
+        PlannedChange {
+            path: root.join("templates").join("agent").join("instructions.md.j2"),
+            action: change_action(&root.join("templates").join("agent").join("instructions.md.j2")),
+            content: include_str!("../templates/agent/instructions.md.j2").to_string(),
+        },
+        PlannedChange {
+            path: root.join("templates").join("agent").join("agent.ts.j2"),
+            action: change_action(&root.join("templates").join("agent").join("agent.ts.j2")),
+            content: include_str!("../templates/agent/agent.ts.j2").to_string(),
+        },
+        PlannedChange {
+            path: root.join("templates").join("agent").join("schedule.ts.j2"),
+            action: change_action(&root.join("templates").join("agent").join("schedule.ts.j2")),
+            content: include_str!("../templates/agent/schedule.ts.j2").to_string(),
+        },
+    ]
+}
+
 fn doctor(command: DoctorCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
     let catalog = load_catalog(&command.catalog)?;
@@ -822,6 +1129,160 @@ fn generate(command: GenerateCommand) -> Result<()> {
         GenerateComponent::Memory(command) => generate_named(GeneratorKind::Memory, command),
         GenerateComponent::Migration(command) => generate_named(GeneratorKind::Migration, command),
     }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum RuntimeKind {
+    Eval,
+    Test,
+    Preview,
+}
+
+fn runtime_delegate(kind: RuntimeKind, command: RuntimeCommand) -> Result<()> {
+    let manifest = load_manifest(&command.manifest)?;
+    let agent = manifest
+        .agents
+        .iter()
+        .find(|agent| agent.name == command.agent)
+        .with_context(|| format!("agent '{}' not found", command.agent))?;
+    let agent_dir = PathBuf::from("agents").join(&agent.name);
+    let commands = runtime_commands(kind, &agent_dir);
+    if command.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agent": command.agent,
+                "env": command.env,
+                "kind": kind,
+                "agent_dir": agent_dir,
+                "dry_run": command.dry_run,
+                "commands": commands,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("{kind:?} for agent {}", agent.name);
+    for command_line in &commands {
+        println!("$ {}", command_line.join(" "));
+    }
+    if command.dry_run || matches!(kind, RuntimeKind::Preview) {
+        if matches!(kind, RuntimeKind::Preview) {
+            println!("Preview is long-running; run the command above to start Eve dev.");
+        }
+        return Ok(());
+    }
+    for command_line in commands {
+        run_process(&agent_dir, &command_line)?;
+    }
+    Ok(())
+}
+
+fn runtime_commands(kind: RuntimeKind, agent_dir: &Path) -> Vec<Vec<String>> {
+    let dir = agent_dir.display().to_string();
+    match kind {
+        RuntimeKind::Eval => vec![vec![
+            "npm".to_string(),
+            "exec".to_string(),
+            "--".to_string(),
+            "eve".to_string(),
+            "eval".to_string(),
+        ]],
+        RuntimeKind::Test => vec![
+            vec![
+                "npm".to_string(),
+                "run".to_string(),
+                "typecheck".to_string(),
+            ],
+            vec![
+                "npm".to_string(),
+                "exec".to_string(),
+                "--".to_string(),
+                "eve".to_string(),
+                "info".to_string(),
+                "--json".to_string(),
+            ],
+        ],
+        RuntimeKind::Preview => vec![vec![
+            "cd".to_string(),
+            dir,
+            "&&".to_string(),
+            "npm".to_string(),
+            "exec".to_string(),
+            "--".to_string(),
+            "eve".to_string(),
+            "dev".to_string(),
+            "--no-ui".to_string(),
+        ]],
+    }
+}
+
+fn run_process(cwd: &Path, command_line: &[String]) -> Result<()> {
+    let Some((program, args)) = command_line.split_first() else {
+        return Ok(());
+    };
+    let status = ProcessCommand::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .with_context(|| format!("failed to run '{}'", command_line.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("command failed: {}", command_line.join(" "))
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct MigrationPlan {
+    env: String,
+    agent: Option<String>,
+    pending: Vec<PathBuf>,
+    apply: bool,
+}
+
+fn migrate(command: MigrateCommand) -> Result<()> {
+    let manifest_path = command.fleet.as_deref().unwrap_or(&command.manifest);
+    let manifest = load_manifest(manifest_path)?;
+    let agents = selected_agents(&manifest, command.agent.as_deref())?;
+    let mut pending = Vec::new();
+    for agent in agents {
+        let path = PathBuf::from("agents")
+            .join(&agent.name)
+            .join("agent")
+            .join("migrations");
+        if path.exists() {
+            for entry in fs::read_dir(&path)
+                .with_context(|| format!("failed to read '{}'", path.display()))?
+            {
+                let entry = entry?;
+                if entry.path().extension().is_some_and(|ext| ext == "ts") {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+    let plan = MigrationPlan {
+        env: command.env,
+        agent: command.agent,
+        pending,
+        apply: command.apply && !command.dry_run,
+    };
+    if command.json {
+        println!("{}", serde_json::to_string_pretty(&plan)?);
+    } else {
+        println!("Migration plan for {}", manifest_path.display());
+        println!("Environment: {}", plan.env);
+        println!("Apply: {}", plan.apply);
+        if plan.pending.is_empty() {
+            println!("No pending migration files found.");
+        } else {
+            for path in &plan.pending {
+                println!("pending {}", path.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn update(command: UpdateCommand) -> Result<()> {
@@ -922,6 +1383,7 @@ enum ComponentKind {
     Skill,
     Subagent,
     Channel,
+    Schedule,
     Approval,
     Eval,
     Memory,
@@ -952,6 +1414,7 @@ impl std::fmt::Display for ComponentKind {
             ComponentKind::Skill => "skill",
             ComponentKind::Subagent => "subagent",
             ComponentKind::Channel => "channel",
+            ComponentKind::Schedule => "schedule",
             ComponentKind::Approval => "approval",
             ComponentKind::Eval => "eval",
             ComponentKind::Memory => "memory",
@@ -998,6 +1461,7 @@ fn parse_component_kind(value: &str) -> Result<ComponentKind> {
         "skill" => Ok(ComponentKind::Skill),
         "subagent" => Ok(ComponentKind::Subagent),
         "channel" => Ok(ComponentKind::Channel),
+        "schedule" => Ok(ComponentKind::Schedule),
         "approval" => Ok(ComponentKind::Approval),
         "eval" => Ok(ComponentKind::Eval),
         "memory" => Ok(ComponentKind::Memory),
@@ -1024,6 +1488,10 @@ fn classify_hotload(component: &ComponentRef, current: &str) -> Result<HotloadCl
         ComponentKind::Channel if update == UpdateKind::Patch => (
             HotloadAction::Restart,
             "channel adapter patch requires process restart",
+        ),
+        ComponentKind::Schedule => (
+            HotloadAction::Redeploy,
+            "schedule changes can increase autonomous activity and require redeploy",
         ),
         ComponentKind::Tool if update == UpdateKind::Patch => (
             HotloadAction::Redeploy,
@@ -1081,6 +1549,10 @@ fn classify_version_change(current: &str, next: &str) -> UpdateKind {
 struct DeployReport {
     env: String,
     agent: Option<String>,
+    dry_run: bool,
+    promote: bool,
+    rollback_to: Option<String>,
+    delegated_command: Vec<String>,
     gates: Vec<DeployGate>,
 }
 
@@ -1116,6 +1588,10 @@ fn deploy_preflight(
         all: command.agent.is_none(),
         updates: true,
         templates: true,
+        fix: false,
+        env: Some(command.env.clone()),
+        connections: false,
+        budgets: true,
         json: false,
         manifest: command
             .fleet
@@ -1123,6 +1599,7 @@ fn deploy_preflight(
             .unwrap_or_else(|| command.manifest.clone()),
         catalog: command.catalog.clone(),
         template_dir: command.template_dir.clone(),
+        environments: PathBuf::from("manifests/environments.yml"),
     };
     let doctor = run_doctor(manifest, catalog, &doctor_command)?;
     let doctor_passed = !doctor.has_failures();
@@ -1147,12 +1624,13 @@ fn deploy_preflight(
         },
     });
 
+    let approvals_passed = validate_manifest(manifest, catalog)
+        .errors
+        .iter()
+        .all(|error| !error.contains("risky tool"));
     gates.push(DeployGate {
         name: "approval-coverage".to_string(),
-        passed: validate_manifest(manifest, catalog)
-            .errors
-            .iter()
-            .all(|error| !error.contains("risky tool")),
+        passed: !command.require_approvals || approvals_passed,
         message: "risky tool approval coverage checked".to_string(),
     });
 
@@ -1165,6 +1643,16 @@ fn deploy_preflight(
     Ok(DeployReport {
         env: command.env.clone(),
         agent: command.agent.clone(),
+        dry_run: command.dry_run,
+        promote: command.promote,
+        rollback_to: command.rollback_to.clone(),
+        delegated_command: vec![
+            "npm".to_string(),
+            "exec".to_string(),
+            "--".to_string(),
+            "eve".to_string(),
+            "deploy".to_string(),
+        ],
         gates,
     })
 }
@@ -1271,10 +1759,15 @@ fn summarize_agent(
         all: false,
         updates: true,
         templates: true,
+        fix: false,
+        env: None,
+        connections: false,
+        budgets: true,
         json: false,
         manifest: PathBuf::from("manifests/agents.yml"),
         catalog: PathBuf::from("manifests/catalog.yml"),
         template_dir: template_dir.to_path_buf(),
+        environments: PathBuf::from("manifests/environments.yml"),
     };
     let doctor = run_doctor(manifest, catalog, &doctor_command)?;
     let generated = generated_summary(agent, manifest, catalog, template_dir)?;
@@ -1390,12 +1883,22 @@ fn deploy(command: DeployCommand) -> Result<()> {
             gate.message
         );
     }
-    println!("Deployment delegation to Eve/Vercel is intentionally not performed yet.");
+    println!("Delegated command: {}", report.delegated_command.join(" "));
+    if command.dry_run {
+        println!("Dry run only; Eve deploy was not invoked.");
+    }
 
-    if passed {
+    if !passed {
+        bail!("deploy preflight failed")
+    } else if command.dry_run {
         Ok(())
     } else {
-        bail!("deploy preflight failed")
+        let agent_name = command
+            .agent
+            .clone()
+            .context("non-dry deploy requires --agent <name>")?;
+        let agent_dir = PathBuf::from("agents").join(agent_name);
+        run_process(&agent_dir, &report.delegated_command)
     }
 }
 
@@ -1618,7 +2121,7 @@ struct PlannedChange {
     content: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum ChangeAction {
     Create,
     Update,
@@ -2117,6 +2620,34 @@ fn load_catalog(path: &Path) -> Result<CatalogManifest> {
     Ok(catalog)
 }
 
+fn load_environments(path: &Path) -> Result<EnvironmentsManifest> {
+    match fs::read_to_string(path) {
+        Ok(source) => serde_yaml::from_str(&source)
+            .with_context(|| format!("failed to parse environments '{}'", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(EnvironmentsManifest::default())
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to read '{}'", path.display())),
+    }
+}
+
+fn selected_agents<'a>(
+    manifest: &'a FleetManifest,
+    agent_filter: Option<&str>,
+) -> Result<Vec<&'a AgentManifest>> {
+    if let Some(agent_name) = agent_filter {
+        Ok(vec![
+            manifest
+                .agents
+                .iter()
+                .find(|agent| agent.name == agent_name)
+                .with_context(|| format!("agent '{agent_name}' not found"))?,
+        ])
+    } else {
+        Ok(manifest.agents.iter().collect())
+    }
+}
+
 struct Renderer<'source> {
     env: Environment<'source>,
 }
@@ -2245,7 +2776,18 @@ impl<'source> Renderer<'source> {
         let mut env = Environment::new();
         env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
 
-        for template_name in ["instructions.md.j2", "agent.ts.j2", "schedule.ts.j2"] {
+        for template_name in [
+            "instructions.md.j2",
+            "agent.ts.j2",
+            "tool.ts.j2",
+            "skill.md.j2",
+            "schedule.ts.j2",
+            "approval.ts.j2",
+            "eval.ts.j2",
+            "memory.ts.j2",
+            "fixture.json.j2",
+            "agent.README.md.j2",
+        ] {
             let path = template_dir.join(template_name);
             let source = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read template '{}'", path.display()))?;
@@ -2289,7 +2831,11 @@ impl<'source> Renderer<'source> {
         let agent_ts = self
             .env
             .get_template("agent.ts.j2")?
-            .render(context! { agent => agent_context })?;
+            .render(context! { agent => agent_context.clone() })?;
+        let agent_readme = self
+            .env
+            .get_template("agent.README.md.j2")?
+            .render(context! { agent => agent_context.clone() })?;
 
         let mut files = vec![
             RenderedFile {
@@ -2323,6 +2869,15 @@ impl<'source> Renderer<'source> {
                 ),
             },
             RenderedFile {
+                path: output_root.join("README.md"),
+                content: with_generated_header(
+                    CommentStyle::Hash,
+                    &agent.name,
+                    "agent.README.md.j2",
+                    &agent_readme,
+                ),
+            },
+            RenderedFile {
                 path: output_root.join("channels").join("eve.ts"),
                 content: render_eve_channel(),
             },
@@ -2335,6 +2890,158 @@ impl<'source> Renderer<'source> {
                 content: render_versions_lock(agent, manifest, catalog),
             },
         ];
+
+        for (tool, version) in effective_components(&manifest.shared.tools, &agent.tools) {
+            let tool_context = context! {
+                name => tool.as_str(),
+                version => version.as_str(),
+                description => catalog
+                    .tools
+                    .get(&tool)
+                    .map(tool_description)
+                    .unwrap_or_else(|| format!("{tool} generated tool contract.")),
+            };
+            let tool_ts = self
+                .env
+                .get_template("tool.ts.j2")?
+                .render(context! { tool => tool_context })?;
+            files.push(RenderedFile {
+                path: output_root.join("tools").join(format!("{tool}.ts")),
+                content: with_generated_header(
+                    CommentStyle::Slash,
+                    &agent.name,
+                    "tool.ts.j2",
+                    &tool_ts,
+                ),
+            });
+        }
+
+        for (skill, version) in effective_components(&manifest.shared.skills, &agent.skills) {
+            let skill_context = context! {
+                name => skill.as_str(),
+                version => version.as_str(),
+                trigger => format!("the {skill} capability is relevant to the user's request"),
+            };
+            let skill_md = self
+                .env
+                .get_template("skill.md.j2")?
+                .render(context! { skill => skill_context })?;
+            files.push(RenderedFile {
+                path: output_root.join("skills").join(format!("{skill}.md")),
+                content: with_generated_header(
+                    CommentStyle::Hash,
+                    &agent.name,
+                    "skill.md.j2",
+                    &skill_md,
+                ),
+            });
+        }
+
+        for subagent in &agent.subagents {
+            files.push(RenderedFile {
+                path: output_root
+                    .join("subagents")
+                    .join(subagent)
+                    .join("instructions.md"),
+                content: render_subagent_placeholder(&agent.name, subagent),
+            });
+            files.push(RenderedFile {
+                path: output_root
+                    .join("subagents")
+                    .join(subagent)
+                    .join("agent.ts"),
+                content: render_subagent_agent_ts(&agent.name, subagent, model),
+            });
+        }
+
+        for (approval, policy) in &agent.approvals {
+            let approval_context = context! {
+                component => approval.as_str(),
+                policy => policy.as_str(),
+            };
+            let approval_ts = self
+                .env
+                .get_template("approval.ts.j2")?
+                .render(context! { approval => approval_context })?;
+            files.push(RenderedFile {
+                path: output_root.join("approvals").join(format!("{approval}.ts")),
+                content: with_generated_header(
+                    CommentStyle::Slash,
+                    &agent.name,
+                    "approval.ts.j2",
+                    &approval_ts,
+                ),
+            });
+        }
+
+        for eval in effective_evals(agent, manifest) {
+            let eval_context = context! {
+                name => eval.as_str(),
+            };
+            let eval_ts = self
+                .env
+                .get_template("eval.ts.j2")?
+                .render(context! { eval => eval_context })?;
+            files.push(RenderedFile {
+                path: PathBuf::from("agents")
+                    .join(&agent.name)
+                    .join("evals")
+                    .join(format!("{eval}.eval.ts")),
+                content: with_generated_header(
+                    CommentStyle::Slash,
+                    &agent.name,
+                    "eval.ts.j2",
+                    &eval_ts,
+                ),
+            });
+            files.push(RenderedFile {
+                path: output_root
+                    .join("evals")
+                    .join(format!("{eval}.contract.json")),
+                content: render_contract_json("eval", &eval, "Eve eval contract placeholder."),
+            });
+        }
+
+        for (memory, version) in effective_components(&manifest.shared.memory, &agent.memory) {
+            let memory_context = context! {
+                name => memory.as_str(),
+                version => version.as_str(),
+                retention => catalog
+                    .memory
+                    .get(&memory)
+                    .and_then(|component| component.retention.as_deref())
+                    .unwrap_or("session"),
+            };
+            let memory_ts = self
+                .env
+                .get_template("memory.ts.j2")?
+                .render(context! { memory => memory_context })?;
+            files.push(RenderedFile {
+                path: output_root.join("memory").join(format!("{memory}.ts")),
+                content: with_generated_header(
+                    CommentStyle::Slash,
+                    &agent.name,
+                    "memory.ts.j2",
+                    &memory_ts,
+                ),
+            });
+        }
+
+        let fixture_context = context! {
+            name => format!("{}_smoke", agent.name),
+            kind => "smoke",
+            description => format!("Generated smoke fixture for {}.", agent.name),
+        };
+        let fixture_json = self
+            .env
+            .get_template("fixture.json.j2")?
+            .render(context! { fixture => fixture_context })?;
+        files.push(RenderedFile {
+            path: output_root
+                .join("fixtures")
+                .join(format!("{}_smoke.json", agent.name)),
+            content: format!("{}\n", fixture_json.trim_end()),
+        });
 
         for schedule in effective_schedules(agent, manifest) {
             let schedule_context = context! {
@@ -2440,6 +3147,53 @@ export default eveChannel({
     .to_string()
 }
 
+fn tool_description(component: &CatalogComponent) -> String {
+    match &component.side_effects {
+        Some(side_effects) => format!("Generated {side_effects} tool contract."),
+        None => "Generated tool contract.".to_string(),
+    }
+}
+
+fn render_subagent_placeholder(agent: &str, subagent: &str) -> String {
+    with_generated_header(
+        CommentStyle::Hash,
+        agent,
+        "subagent-placeholder",
+        &format!(
+            "# {subagent}\n\nThis subagent folder is generated as an Eve Rails convention placeholder.\n"
+        ),
+    )
+}
+
+fn render_subagent_agent_ts(agent: &str, subagent: &str, model: &str) -> String {
+    with_generated_header(
+        CommentStyle::Slash,
+        agent,
+        "subagent-agent",
+        &format!(
+            "import {{ defineAgent }} from \"eve\";\n\nexport default defineAgent({{\n  description: \"Generated {subagent} subagent skeleton.\",\n  model: \"{}\",\n}});\n",
+            escape_ts_string(model)
+        ),
+    )
+}
+
+fn render_contract_json(kind: &str, name: &str, description: &str) -> String {
+    format!(
+        "{{\n  \"kind\": \"{}\",\n  \"name\": \"{}\",\n  \"description\": \"{}\"\n}}\n",
+        escape_json(kind),
+        escape_json(name),
+        escape_json(description)
+    )
+}
+
+fn escape_json(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn escape_ts_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 enum CommentStyle {
     Hash,
     Slash,
@@ -2513,6 +3267,11 @@ fn render_agent_manifest(agent: &AgentManifest, manifest: &FleetManifest) -> Str
         output.push_str(&format!("token_budget: {token_budget}\n"));
     }
     append_optional_string(&mut output, "timeout", agent.timeout.as_deref());
+    output.push_str("runtime: eve@0.24.4\n");
+    output.push_str("compatibility:\n");
+    output.push_str("  hot_load: true\n");
+    output.push_str("  requires_restart: false\n");
+    output.push_str("  min_runtime: eve@0.24.4\n");
     output
 }
 
@@ -2524,6 +3283,9 @@ fn render_versions_lock(
     let mut output = String::new();
     output.push_str("# Generated by eve-rails. Do not edit generated regions.\n");
     output.push_str("resolved:\n");
+    output.push_str(
+        "  runtime/eve@0.24.4:\n    source: package.json\n    digest: runtime:eve:0.24.4\n",
+    );
     append_lock_entries(&mut output, "tools", &agent.tools, &catalog.tools);
     append_lock_entries(&mut output, "skills", &agent.skills, &catalog.skills);
     append_lock_entries(&mut output, "memory", &agent.memory, &catalog.memory);
@@ -2694,7 +3456,12 @@ fn collect_named_report(
     manifest: &FleetManifest,
 ) {
     let resolved = catalog.get(name).map(|component| component.version.clone());
-    let update = classify_update(requested, resolved.as_deref(), catalog.get(name));
+    let update = apply_version_policy(
+        classify_update(requested, resolved.as_deref(), catalog.get(name)),
+        kind,
+        name,
+        manifest,
+    );
     reports.push(VersionReport {
         agent: agent.name.clone(),
         component_kind: kind.to_string(),
@@ -2704,6 +3471,38 @@ fn collect_named_report(
         update,
         affected_evals: effective_evals(agent, manifest),
     });
+}
+
+fn apply_version_policy(
+    update: UpdateKind,
+    kind: &str,
+    name: &str,
+    manifest: &FleetManifest,
+) -> UpdateKind {
+    let policy = match kind {
+        "approval" => manifest.version_policy.approvals,
+        "memory" => manifest.version_policy.memory,
+        "tool" => manifest
+            .version_policy
+            .tools
+            .get(name)
+            .copied()
+            .or(manifest.version_policy.default),
+        _ => manifest.version_policy.default,
+    };
+    let Some(policy) = policy else {
+        return update;
+    };
+    match policy {
+        PolicyUpdateKind::Pin if update != UpdateKind::Current => UpdateKind::Major,
+        PolicyUpdateKind::Patch | PolicyUpdateKind::PatchAuto
+            if matches!(update, UpdateKind::Minor | UpdateKind::Major) =>
+        {
+            UpdateKind::Major
+        }
+        PolicyUpdateKind::Minor if update == UpdateKind::Major => UpdateKind::Major,
+        _ => update,
+    }
 }
 
 fn resolve_version(requested: &str, component: Option<&CatalogComponent>) -> Option<String> {
@@ -2794,6 +3593,26 @@ fn effective_evals(agent: &AgentManifest, manifest: &FleetManifest) -> Vec<Strin
         .chain(agent.evals.iter())
         .cloned()
         .collect()
+}
+
+fn effective_components(
+    shared: &[String],
+    agent_components: &ComponentMap,
+) -> Vec<(String, String)> {
+    let mut components = Vec::new();
+    for name in shared {
+        components.push((name.clone(), "catalog".to_string()));
+    }
+    for (name, version) in agent_components {
+        if let Some((_, existing_version)) =
+            components.iter_mut().find(|(existing, _)| existing == name)
+        {
+            *existing_version = version.clone();
+        } else {
+            components.push((name.clone(), version.clone()));
+        }
+    }
+    components
 }
 
 fn print_version_reports(reports: &[VersionReport]) {
@@ -3021,8 +3840,188 @@ fn run_doctor(
     if command.updates {
         add_update_checks(&mut checks, manifest, catalog, &command.template_dir)?;
     }
+    if command.budgets {
+        add_budget_checks(&mut checks, manifest);
+    }
+    add_schedule_safety_checks(&mut checks, manifest, catalog);
+    if command.env.is_some() || command.connections {
+        add_environment_checks(&mut checks, command)?;
+    }
+    if command.fix {
+        add_fix_plan_checks(&mut checks, manifest, catalog, &command.template_dir)?;
+    }
 
     Ok(DoctorReport { checks })
+}
+
+fn add_budget_checks(checks: &mut Vec<DoctorCheck>, manifest: &FleetManifest) {
+    let defaults_invalid = manifest
+        .defaults
+        .cost_budget
+        .is_some_and(|value| value <= 0.0)
+        || manifest
+            .defaults
+            .token_budget
+            .is_some_and(|value| value == 0)
+        || manifest
+            .defaults
+            .timeout
+            .as_deref()
+            .is_some_and(str::is_empty);
+    let invalid = manifest
+        .agents
+        .iter()
+        .filter(|agent| {
+            agent.cost_budget.is_some_and(|value| value <= 0.0)
+                || agent.token_budget.is_some_and(|value| value == 0)
+                || agent.timeout.as_deref().is_some_and(str::is_empty)
+        })
+        .map(|agent| agent.name.clone())
+        .collect::<Vec<_>>();
+    let passed = invalid.is_empty() && !defaults_invalid;
+    let message = if defaults_invalid {
+        format!(
+            "invalid default budget metadata{}",
+            if invalid.is_empty() {
+                String::new()
+            } else {
+                format!(" and invalid agent budgets: {}", invalid.join(","))
+            }
+        )
+    } else {
+        format!("invalid budget metadata for agents: {}", invalid.join(","))
+    };
+    push_check(
+        checks,
+        "budgets-valid",
+        passed,
+        "agent budgets are valid where configured",
+        &message,
+    );
+}
+
+fn add_schedule_safety_checks(
+    checks: &mut Vec<DoctorCheck>,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+) {
+    let mut missing = Vec::new();
+    for agent in &manifest.agents {
+        for schedule in effective_schedules(agent, manifest) {
+            let metadata = catalog.schedules.get(&schedule);
+            let has_owner = agent
+                .owner
+                .as_ref()
+                .or(manifest.defaults.owner.as_ref())
+                .or_else(|| metadata.and_then(|component| component.owner.as_ref()))
+                .is_some();
+            let has_auth = agent
+                .auth
+                .as_ref()
+                .or(manifest.defaults.auth.as_ref())
+                .or_else(|| metadata.and_then(|component| component.auth.as_ref()))
+                .is_some();
+            let has_visibility = agent
+                .visibility
+                .as_ref()
+                .or(manifest.defaults.visibility.as_ref())
+                .or_else(|| metadata.and_then(|component| component.visibility.as_ref()))
+                .is_some();
+            if !(has_owner && has_auth && has_visibility) {
+                missing.push(format!("{}:{schedule}", agent.name));
+            }
+        }
+    }
+    push_check(
+        checks,
+        "schedule-safety-metadata",
+        missing.is_empty(),
+        "schedules have owner/auth/visibility metadata",
+        &format!(
+            "schedules missing owner/auth/visibility metadata: {}",
+            missing.join(",")
+        ),
+    );
+}
+
+fn add_environment_checks(checks: &mut Vec<DoctorCheck>, command: &DoctorCommand) -> Result<()> {
+    let env_name = command.env.as_deref().unwrap_or("development");
+    let environments = load_environments(&command.environments)?;
+    let Some(policy) = environments.environments.get(env_name) else {
+        push_check(
+            checks,
+            "environment-defined",
+            false,
+            "environment exists",
+            &format!("environment '{env_name}' is not defined"),
+        );
+        return Ok(());
+    };
+    push_check(
+        checks,
+        "environment-defined",
+        true,
+        "environment exists",
+        "environment is missing",
+    );
+    let missing_env = policy
+        .required_env
+        .iter()
+        .chain(policy.required_secrets.iter())
+        .filter(|key| env::var_os(key).is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    push_check(
+        checks,
+        "environment-variables",
+        missing_env.is_empty(),
+        "required env vars and secrets are present",
+        &format!("missing env vars/secrets: {}", missing_env.join(",")),
+    );
+    if command.connections {
+        push_check(
+            checks,
+            "connections-configured",
+            policy.required_connections.is_empty(),
+            "required connections are configured or none are required",
+            &format!(
+                "manual connection verification required: {}",
+                policy.required_connections.join(",")
+            ),
+        );
+    }
+    if env_name == "production" {
+        push_check(
+            checks,
+            "observability",
+            policy.observability.unwrap_or(false),
+            "production observability is enabled",
+            "production environment must enable observability",
+        );
+    }
+    Ok(())
+}
+
+fn add_fix_plan_checks(
+    checks: &mut Vec<DoctorCheck>,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    template_dir: &Path,
+) -> Result<()> {
+    let plan = batch_plan(manifest, catalog, template_dir)?;
+    let repairs = plan
+        .operations
+        .iter()
+        .filter(|operation| operation.action != BatchAction::Skip)
+        .count();
+    push_check(
+        checks,
+        "fix-plan",
+        true,
+        &format!("doctor --fix would apply {repairs} safe generated-file repair(s)"),
+        "doctor --fix plan failed",
+    );
+    Ok(())
 }
 
 fn add_template_checks(
@@ -3110,6 +4109,7 @@ fn generated_metadata_present(plan: &BatchPlan) -> bool {
                 .content
                 .starts_with("// Generated by eve-rails. Do not edit generated regions.")
             || operation.content.contains(r#""x-eve-rails": "generated""#)
+            || operation.content.contains(r#""kind": "#)
     })
 }
 
@@ -3819,7 +4819,11 @@ agents:
             env: "staging".to_string(),
             require_evals,
             require_doctor,
+            require_approvals: false,
             canary: None,
+            promote: false,
+            rollback_to: None,
+            dry_run: true,
             manifest: PathBuf::from("manifests/agents.yml"),
             catalog: PathBuf::from("manifests/catalog.yml"),
             template_dir: PathBuf::from("templates/agent"),
@@ -3906,7 +4910,7 @@ channels:
             .render_agent(&manifest.agents[0], &manifest, &catalog)
             .expect("agent renders");
 
-        assert_eq!(files.len(), 8);
+        assert_eq!(files.len(), 17);
         assert!(
             files
                 .iter()
@@ -3929,6 +4933,21 @@ channels:
                 .any(|file| file.path.ends_with("schedules/weekday_triage.ts")
                     && file.content.contains("0 9 * * 1-5"))
         );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("tools/prepare_refund.ts"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("memory/customer_profile.ts"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("evals/standard.eval.ts"))
+        );
     }
 
     #[test]
@@ -3941,7 +4960,14 @@ channels:
         )
         .expect("template");
         fs::write(dir.join("agent.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("tool.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("skill.md.j2"), "# skill").expect("template");
         fs::write(dir.join("schedule.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("approval.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("eval.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("memory.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("fixture.json.j2"), "{}").expect("template");
+        fs::write(dir.join("agent.README.md.j2"), "# agent").expect("template");
 
         let renderer = Renderer::load(&dir).expect("renderer loads");
         let manifest = valid_manifest();
@@ -3985,7 +5011,7 @@ channels:
     }
 
     #[test]
-    fn ten_agent_fixture_plans_seventy_files() {
+    fn ten_agent_fixture_plans_expected_files() {
         let manifest = load_manifest(Path::new(
             "examples/basic-fleet/fixtures/batch-10-agents.yml",
         ))
@@ -3999,7 +5025,7 @@ channels:
             batch_plan(&manifest, &catalog, Path::new("templates/agent")).expect("batch plan");
 
         assert_eq!(manifest.agents.len(), 10);
-        assert_eq!(plan.operations.len(), 70);
+        assert_eq!(plan.operations.len(), 217);
     }
 
     #[test]
@@ -4082,10 +5108,15 @@ agents:
             all: true,
             updates,
             templates,
+            fix: false,
+            env: None,
+            connections: false,
+            budgets: true,
             json: false,
             manifest: PathBuf::from("manifests/agents.yml"),
             catalog: PathBuf::from("manifests/catalog.yml"),
             template_dir: PathBuf::from("templates/agent"),
+            environments: PathBuf::from("manifests/environments.yml"),
         }
     }
 

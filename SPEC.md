@@ -65,6 +65,8 @@ npx eve doctor
 npx eve doctor --all
 npx eve doctor --updates
 npx eve doctor --templates
+npx eve doctor --env production --connections --budgets
+npx eve doctor --fix
 ```
 
 ### Version and Update
@@ -80,7 +82,11 @@ npx eve rollback --agent support --to 1.3.2
 
 ```sh
 npx eve deploy --agent support --env staging
-npx eve deploy --agent support --env production --require-evals --require-doctor
+npx eve deploy --agent support --env production --require-evals --require-doctor --require-approvals --dry-run
+npx eve eval --agent support --dry-run
+npx eve test --agent support
+npx eve preview --agent support --dry-run
+npx eve migrate --agent support --env production --dry-run
 npx eve inspect --agent support
 npx eve graph --all --format mermaid
 ```
@@ -106,9 +112,12 @@ npx eve graph --all --format mermaid
       agent.ts.j2
       tool.ts.j2
       skill.md.j2
+      schedule.ts.j2
       eval.ts.j2
       approval.ts.j2
       memory.ts.j2
+      fixture.json.j2
+      agent.README.md.j2
       channel.ts.j2
 
   catalog/
@@ -378,6 +387,157 @@ Checklist:
 - Inspect summarizes identity, tools, skills, approvals, evals, memory, versions, channels, schedules, and deployment state.
 - Graph shows agent composition.
 - JSON output can feed dashboards or CI.
+
+### PR 10: Repo and CLI Hygiene
+
+Deliverables:
+
+- Updated post-v1 implementation checklist.
+- Help text without stale PR references.
+- Changelog entries for v1.1.
+- Philosophy gap status.
+
+Checklist:
+
+- `eve-rails-cli --help` has no stale PR references.
+- `apply` describes render/apply behavior.
+- `deploy` describes preflight and Eve/Vercel delegation.
+
+### PR 11: Doctor Safety Expansion
+
+Deliverables:
+
+- `doctor --fix`.
+- `doctor --env <name>`.
+- `doctor --connections`.
+- `doctor --budgets`.
+- Environment and observability checks.
+- Schedule owner/auth/visibility checks.
+- Budget validation.
+
+Checklist:
+
+- Doctor JSON and text output include the new checks.
+- `--fix` reports planned safe mechanical repairs before writing.
+- Doctor rejects unsafe missing approval, schedule, budget, and production observability states.
+
+### PR 12: Complete Agent Template Rendering
+
+Deliverables:
+
+- Generated `agent/tools/`.
+- Generated `agent/skills/`.
+- Generated `agent/subagents/`.
+- Generated `agent/channels/`.
+- Generated `agent/schedules/`.
+- Generated `agent/approvals/`.
+- Generated `agent/evals/` contracts.
+- Generated top-level Eve `evals/*.eval.ts`.
+- Generated `agent/memory/`.
+- Generated `agent/fixtures/`.
+- Generated `agent/README.md`.
+
+Checklist:
+
+- Example fleet renders all expected directories.
+- Generated support agent passes `npm run typecheck`.
+- Generated support agent returns ready from `npm exec -- eve info --json`.
+- `render --all --check` detects stale generated files.
+
+### PR 13: Init and Example Project Scaffolding
+
+Deliverables:
+
+- `init <name>`.
+- `--template basic`.
+- `--template customer-support`.
+- `--model`.
+- `--owner`.
+- `--yes`.
+- `--dry-run`.
+- `--json`.
+- `--force`.
+
+Checklist:
+
+- Init never overwrites existing files unless `--force`.
+- Init output can run `plan`, `doctor`, and `render`.
+- JSON output lists planned changes.
+
+### PR 14: Eval/Test/Preview Delegation
+
+Deliverables:
+
+- `eval`.
+- `test`.
+- `preview`.
+- `--agent`.
+- `--manifest`.
+- `--catalog`.
+- `--env`.
+- `--json`.
+- `--dry-run`.
+
+Checklist:
+
+- Missing agent package gives actionable errors.
+- `test` runs `npm run typecheck` and `npm exec -- eve info --json`.
+- `eval --dry-run` reports the delegated Eve command without credentials.
+- `preview --dry-run` documents the `eve dev --no-ui` command.
+
+### PR 15: Migrate Command
+
+Deliverables:
+
+- `migrate --agent <name> --env <env> --dry-run`.
+- `migrate --fleet <manifest> --env <env> --dry-run`.
+- `migrate --apply`.
+
+Checklist:
+
+- Dry-run migration plans are JSON-compatible.
+- Pending migration files are listed per agent.
+- Migration status changes only happen with `--apply`.
+
+### PR 16: Version Policy and Compatibility Metadata
+
+Deliverables:
+
+- `version_policy` manifest support.
+- Generated compatibility metadata.
+- Runtime version recorded in generated manifests and lockfiles.
+- Hot-load classifier treats schedule activity increases as redeploy-only.
+
+Checklist:
+
+- Patch/minor/major resolution follows policy.
+- Approvals and memory can be pinned.
+- Schedule changes that increase autonomous activity are not hot-loadable.
+
+### PR 17: Deployment Delegation and Release Hardening
+
+Deliverables:
+
+- `deploy --require-approvals`.
+- `deploy --promote`.
+- `deploy --rollback-to <deployment-id>`.
+- `deploy --dry-run`.
+- Non-dry deploy delegation to `npm exec -- eve deploy`.
+
+Checklist:
+
+- Dry-run reports gates and delegated command.
+- Production deploy requires doctor/evals/approvals unless explicitly relaxed outside production.
+- Tests never perform accidental production deploys.
+
+## Philosophy Gap Status
+
+- Implemented: manifest/catalog validation, strict rendering, generators, batch plan/apply, doctor diagnostics, lockfiles, version reports, hot-load classification, migration generation/planning, deploy preflight/delegation, rollback planning, inspect, graph, schedules, init scaffolding, runtime eval/test/preview delegation.
+- Implemented as Eve-native: `agent.ts`, instructions, tools, skills, subagents, channels, schedules, top-level evals, package files, and TypeScript checks.
+- Implemented as Rails-layer conventions: approvals, memory, fixtures, and `agent/evals/` contract metadata. Eve currently ignores these folders when placed directly under `agent/`, so generated metadata is explicit that these are framework conventions until Eve consumes them.
+- Partial: `doctor --fix` reports safe repair plans; destructive or policy-changing fixes remain intentionally unsupported.
+- Partial: deployment delegates to Eve but does not replace Vercel release management.
+- Partial: migrations are planned and status-tracked, not executed destructively by default.
 
 ## Metrics
 

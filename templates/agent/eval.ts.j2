@@ -1,8 +1,9 @@
-import { defineEval } from "eve";
+import { defineEval } from "eve/evals";
 
 export default defineEval({
-  name: "{{ eval.name }}",
-  async run() {
-    throw new Error("{{ eval.name }} eval is not implemented yet");
+  description: "{{ eval.name }} generated placeholder eval.",
+  async test(t) {
+    await t.send("Run the {{ eval.name }} smoke check.");
+    t.succeeded();
   },
 });
