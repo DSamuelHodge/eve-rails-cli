@@ -15,6 +15,13 @@ Why Rust:
 
 Jinja2-compatible templates are handled through Rust's `minijinja` crate. YAML manifests are parsed with `serde_yaml`.
 
+## Runtime Requirements
+
+- Rust 1.97 or newer.
+- Node.js 24 or newer for testing real Eve flows through `npx eve@latest`.
+
+This project keeps the CLI core in Rust, but Eve itself is distributed through npm, so Node is required for integration tests against the real framework.
+
 ## Current Status
 
 This repository is at the environment and scaffold stage.
@@ -46,6 +53,7 @@ cargo run -- plan manifests/agents.yml
 cargo run -- doctor --all
 cargo run -- inspect --agent support
 cargo run -- graph --all --format mermaid
+npx eve@latest --help
 ```
 
 ## Project Documents
