@@ -5,5 +5,5 @@
 import { defineAgent } from "eve";
 
 export default defineAgent({
-  model: "xai/grok-4.5",
+  model: "openai/gpt-5.5",
 });
