@@ -29,6 +29,9 @@ jobs:
       - name: Build
         run: cargo build --locked
 
+      - name: CLI acceptance
+        run: bash scripts/verify-cli.sh
+
   eve-example:
     name: Eve Example
     runs-on: ubuntu-latest
