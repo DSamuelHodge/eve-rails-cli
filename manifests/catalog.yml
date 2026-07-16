@@ -32,3 +32,15 @@ memory:
   customer_profile:
     version: 1.0.0
     retention: 180d
+
+approvals:
+  on-risk:
+    version: 1.0.0
+  required:
+    version: 1.0.0
+
+channels:
+  web:
+    version: 1.0.0
+  slack:
+    version: 1.0.0

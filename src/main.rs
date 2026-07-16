@@ -47,6 +47,10 @@ struct ManifestCommand {
     #[arg(default_value = "manifests/agents.yml")]
     manifest: PathBuf,
 
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
@@ -69,6 +73,10 @@ struct RenderCommand {
     /// Path to the fleet manifest.
     #[arg(long, default_value = "manifests/agents.yml")]
     manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
 
     /// Path to the template directory.
     #[arg(long, default_value = "templates/agent")]
@@ -96,6 +104,10 @@ struct DoctorCommand {
     /// Path to the fleet manifest.
     #[arg(long, default_value = "manifests/agents.yml")]
     manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -213,6 +225,10 @@ struct AgentCommand {
     #[arg(long, default_value = "manifests/agents.yml")]
     manifest: PathBuf,
 
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
@@ -235,6 +251,10 @@ struct GraphCommand {
     /// Path to the fleet manifest.
     #[arg(long, default_value = "manifests/agents.yml")]
     manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -299,6 +319,40 @@ struct AgentManifest {
 
 type ComponentMap = BTreeMap<String, String>;
 
+#[derive(Debug, Default, Deserialize)]
+struct CatalogManifest {
+    #[serde(default)]
+    tools: BTreeMap<String, CatalogComponent>,
+    #[serde(default)]
+    skills: BTreeMap<String, CatalogComponent>,
+    #[serde(default)]
+    evals: BTreeMap<String, CatalogComponent>,
+    #[serde(default)]
+    approvals: BTreeMap<String, CatalogComponent>,
+    #[serde(default)]
+    memory: BTreeMap<String, CatalogComponent>,
+    #[serde(default)]
+    channels: BTreeMap<String, CatalogComponent>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CatalogComponent {
+    version: String,
+    side_effects: Option<SideEffects>,
+    retention: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum SideEffects {
+    None,
+    Read,
+    Write,
+    External,
+    Money,
+    Production,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -319,11 +373,13 @@ fn main() -> Result<()> {
 
 fn plan(command: ManifestCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
-    let report = validate_manifest(&manifest);
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
 
     if command.json {
         let output = serde_json::json!({
             "manifest": command.manifest,
+            "catalog": command.catalog,
             "agent_count": manifest.agents.len(),
             "errors": report.errors,
         });
@@ -332,6 +388,7 @@ fn plan(command: ManifestCommand) -> Result<()> {
     }
 
     println!("Plan for {}", command.manifest.display());
+    println!("Catalog: {}", command.catalog.display());
     println!("Agents: {}", manifest.agents.len());
     println!(
         "Shared: {} tools, {} skills, {} memory schemas",
@@ -389,7 +446,8 @@ fn plan(command: ManifestCommand) -> Result<()> {
 
 fn render(command: RenderCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
-    let report = validate_manifest(&manifest);
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
     ensure_valid(&report)?;
 
     let scope = if command.all {
@@ -415,11 +473,13 @@ fn render(command: RenderCommand) -> Result<()> {
 
 fn doctor(command: DoctorCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
-    let report = validate_manifest(&manifest);
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
 
     if command.json {
         let output = serde_json::json!({
             "manifest": command.manifest,
+            "catalog": command.catalog,
             "all": command.all,
             "updates": command.updates,
             "templates": command.templates,
@@ -432,6 +492,7 @@ fn doctor(command: DoctorCommand) -> Result<()> {
     }
 
     println!("Doctor for {}", command.manifest.display());
+    println!("Catalog: {}", command.catalog.display());
     println!("Agents checked: {}", manifest.agents.len());
     if command.templates {
         println!("Template checks requested.");
@@ -490,6 +551,9 @@ fn deploy(command: DeployCommand) -> Result<()> {
 
 fn inspect(command: AgentCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
+    ensure_valid(&report)?;
     let agent = manifest
         .agents
         .iter()
@@ -548,6 +612,9 @@ fn inspect(command: AgentCommand) -> Result<()> {
 
 fn graph(command: GraphCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
+    ensure_valid(&report)?;
     let agents: Vec<&AgentManifest> = if command.all {
         manifest.agents.iter().collect()
     } else if let Some(agent_name) = &command.agent {
@@ -619,7 +686,8 @@ fn graph(command: GraphCommand) -> Result<()> {
 
 fn stub_manifest_command(name: &str, command: ManifestCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
-    let report = validate_manifest(&manifest);
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
     ensure_valid(&report)?;
 
     if command.json {
@@ -628,6 +696,7 @@ fn stub_manifest_command(name: &str, command: ManifestCommand) -> Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "command": name,
                 "manifest": command.manifest,
+                "catalog": command.catalog,
                 "agent_count": manifest.agents.len(),
                 "implemented": false,
             }))?
@@ -676,19 +745,52 @@ fn load_manifest(path: &Path) -> Result<FleetManifest> {
     Ok(manifest)
 }
 
+fn load_catalog(path: &Path) -> Result<CatalogManifest> {
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("failed to read catalog '{}'", path.display()))?;
+    let catalog: CatalogManifest = serde_yaml::from_str(&source)
+        .with_context(|| format!("failed to parse catalog '{}'", path.display()))?;
+    Ok(catalog)
+}
+
 #[derive(Debug, Default)]
 struct ValidationReport {
     errors: Vec<String>,
     warnings: Vec<String>,
 }
 
-fn validate_manifest(manifest: &FleetManifest) -> ValidationReport {
+fn validate_manifest(manifest: &FleetManifest, catalog: &CatalogManifest) -> ValidationReport {
     let mut report = ValidationReport::default();
 
     if manifest.agents.is_empty() {
         report
             .errors
             .push("manifest must define at least one agent".to_string());
+    }
+
+    validate_named_list(
+        &mut report,
+        "shared",
+        "tool",
+        &manifest.shared.tools,
+        &catalog.tools,
+    );
+    validate_named_list(
+        &mut report,
+        "shared",
+        "skill",
+        &manifest.shared.skills,
+        &catalog.skills,
+    );
+    validate_named_list(
+        &mut report,
+        "shared",
+        "memory",
+        &manifest.shared.memory,
+        &catalog.memory,
+    );
+    if let Some(policy) = &manifest.defaults.approvals {
+        validate_policy(&mut report, "defaults", policy, catalog);
     }
 
     for agent in &manifest.agents {
@@ -700,6 +802,11 @@ fn validate_manifest(manifest: &FleetManifest) -> ValidationReport {
                 "agent '{}' must use lowercase kebab-case or snake_case",
                 agent.name
             ));
+        }
+        if agent.version.as_deref().is_none_or(str::is_empty) {
+            report
+                .errors
+                .push(format!("agent '{}' must define version", agent.name));
         }
         if agent.responsibility.trim().is_empty() {
             report
@@ -723,6 +830,34 @@ fn validate_manifest(manifest: &FleetManifest) -> ValidationReport {
                 .warnings
                 .push(format!("agent '{}' has no evals", agent.name));
         }
+        validate_named_list(
+            &mut report,
+            &format!("agent '{}'", agent.name),
+            "channel",
+            &manifest.defaults.channels,
+            &catalog.channels,
+        );
+        validate_named_list(
+            &mut report,
+            &format!("agent '{}'", agent.name),
+            "channel",
+            &agent.channels,
+            &catalog.channels,
+        );
+        validate_named_list(
+            &mut report,
+            &format!("agent '{}'", agent.name),
+            "eval",
+            &manifest.defaults.evals,
+            &catalog.evals,
+        );
+        validate_named_list(
+            &mut report,
+            &format!("agent '{}'", agent.name),
+            "eval",
+            &agent.evals,
+            &catalog.evals,
+        );
 
         for (tool, version) in &agent.tools {
             if version.trim().is_empty() {
@@ -731,12 +866,31 @@ fn validate_manifest(manifest: &FleetManifest) -> ValidationReport {
                     agent.name, tool
                 ));
             }
-            if is_risky_tool(tool) && !agent.approvals.contains_key(tool) {
+            validate_component_version(
+                &mut report,
+                &format!("agent '{}'", agent.name),
+                "tool",
+                tool,
+                version,
+                &catalog.tools,
+            );
+            if is_risky_tool(tool, catalog) && !agent.approvals.contains_key(tool) {
                 report.errors.push(format!(
                     "agent '{}' risky tool '{}' must have approval policy",
                     agent.name, tool
                 ));
             }
+        }
+
+        for (skill, version) in &agent.skills {
+            validate_component_version(
+                &mut report,
+                &format!("agent '{}'", agent.name),
+                "skill",
+                skill,
+                version,
+                &catalog.skills,
+            );
         }
 
         for (memory, version) in &agent.memory {
@@ -746,10 +900,101 @@ fn validate_manifest(manifest: &FleetManifest) -> ValidationReport {
                     agent.name, memory
                 ));
             }
+            validate_component_version(
+                &mut report,
+                &format!("agent '{}'", agent.name),
+                "memory",
+                memory,
+                version,
+                &catalog.memory,
+            );
+            if catalog
+                .memory
+                .get(memory)
+                .is_some_and(|component| component.retention.as_deref().is_none_or(str::is_empty))
+            {
+                report.errors.push(format!(
+                    "agent '{}' memory '{}' must declare retention in catalog",
+                    agent.name, memory
+                ));
+            }
+        }
+
+        for (tool, policy) in &agent.approvals {
+            if !agent.tools.contains_key(tool) {
+                report.errors.push(format!(
+                    "agent '{}' approval policy for '{}' does not match an agent tool",
+                    agent.name, tool
+                ));
+            }
+            if policy.trim().is_empty() {
+                report.errors.push(format!(
+                    "agent '{}' approval policy for '{}' cannot be empty",
+                    agent.name, tool
+                ));
+            }
+            validate_policy(
+                &mut report,
+                &format!("agent '{}'", agent.name),
+                policy,
+                catalog,
+            );
         }
     }
 
     report
+}
+
+fn validate_policy(
+    report: &mut ValidationReport,
+    scope: &str,
+    policy: &str,
+    catalog: &CatalogManifest,
+) {
+    if !catalog.approvals.contains_key(policy) {
+        report.errors.push(format!(
+            "{scope} references missing approval policy '{policy}'"
+        ));
+    }
+}
+
+fn validate_named_list(
+    report: &mut ValidationReport,
+    scope: &str,
+    kind: &str,
+    names: &[String],
+    catalog: &BTreeMap<String, CatalogComponent>,
+) {
+    for name in names {
+        if !catalog.contains_key(name) {
+            report
+                .errors
+                .push(format!("{scope} references missing {kind} '{name}'"));
+        }
+    }
+}
+
+fn validate_component_version(
+    report: &mut ValidationReport,
+    scope: &str,
+    kind: &str,
+    name: &str,
+    requested_version: &str,
+    catalog: &BTreeMap<String, CatalogComponent>,
+) {
+    let Some(component) = catalog.get(name) else {
+        report
+            .errors
+            .push(format!("{scope} references missing {kind} '{name}'"));
+        return;
+    };
+
+    if requested_version != component.version {
+        report.errors.push(format!(
+            "{scope} {kind} '{name}' requests version {requested_version}, but catalog has {}",
+            component.version
+        ));
+    }
 }
 
 fn print_validation_report(report: &ValidationReport) -> Result<()> {
@@ -792,19 +1037,18 @@ fn is_slug(value: &str) -> bool {
     })
 }
 
-fn is_risky_tool(tool: &str) -> bool {
-    let tool = tool.to_ascii_lowercase();
-    [
-        "refund",
-        "delete",
-        "publish",
-        "production",
-        "payment",
-        "charge",
-        "email",
-    ]
-    .iter()
-    .any(|risk| tool.contains(risk))
+fn is_risky_tool(tool: &str, catalog: &CatalogManifest) -> bool {
+    let Some(component) = catalog.tools.get(tool) else {
+        return false;
+    };
+
+    matches!(
+        component.side_effects,
+        Some(SideEffects::Write)
+            | Some(SideEffects::External)
+            | Some(SideEffects::Money)
+            | Some(SideEffects::Production)
+    )
 }
 
 fn node(value: &str) -> String {
@@ -818,4 +1062,173 @@ fn node(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(source: &str) -> FleetManifest {
+        serde_yaml::from_str(source).expect("manifest should parse")
+    }
+
+    fn catalog(source: &str) -> CatalogManifest {
+        serde_yaml::from_str(source).expect("catalog should parse")
+    }
+
+    fn valid_catalog() -> CatalogManifest {
+        catalog(
+            r#"
+tools:
+  search_customers:
+    version: 1.0.0
+    side_effects: read
+  prepare_refund:
+    version: 1.0.0
+    side_effects: money
+skills:
+  handle_refund:
+    version: 1.0.0
+evals:
+  standard:
+    version: 1.0.0
+approvals:
+  required:
+    version: 1.0.0
+memory:
+  customer_profile:
+    version: 1.0.0
+    retention: 180d
+channels:
+  web:
+    version: 1.0.0
+"#,
+        )
+    }
+
+    fn valid_manifest() -> FleetManifest {
+        manifest(
+            r#"
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+  channels: [web]
+  evals: [standard]
+agents:
+  - name: billing
+    version: 1.0.0
+    responsibility: Answer billing questions.
+    tools:
+      search_customers: 1.0.0
+      prepare_refund: 1.0.0
+    skills:
+      handle_refund: 1.0.0
+    approvals:
+      prepare_refund: required
+    memory:
+      customer_profile: 1.0.0
+"#,
+        )
+    }
+
+    #[test]
+    fn valid_manifest_resolves_against_catalog() {
+        let report = validate_manifest(&valid_manifest(), &valid_catalog());
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn missing_catalog_component_fails() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0]
+            .tools
+            .insert("missing_tool".to_string(), "1.0.0".to_string());
+
+        let report = validate_manifest(&manifest, &valid_catalog());
+
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("missing tool 'missing_tool'")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn version_mismatch_fails() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0]
+            .skills
+            .insert("handle_refund".to_string(), "2.0.0".to_string());
+
+        let report = validate_manifest(&manifest, &valid_catalog());
+
+        assert!(
+            report.errors.iter().any(|error| error
+                .contains("skill 'handle_refund' requests version 2.0.0, but catalog has 1.0.0")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn risky_tool_without_approval_fails() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].approvals.clear();
+
+        let report = validate_manifest(&manifest, &valid_catalog());
+
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("risky tool 'prepare_refund'")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn memory_without_retention_fails() {
+        let catalog = catalog(
+            r#"
+tools:
+  search_customers:
+    version: 1.0.0
+    side_effects: read
+  prepare_refund:
+    version: 1.0.0
+    side_effects: money
+skills:
+  handle_refund:
+    version: 1.0.0
+evals:
+  standard:
+    version: 1.0.0
+approvals:
+  required:
+    version: 1.0.0
+memory:
+  customer_profile:
+    version: 1.0.0
+channels:
+  web:
+    version: 1.0.0
+"#,
+        );
+
+        let report = validate_manifest(&valid_manifest(), &catalog);
+
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("memory 'customer_profile' must declare retention")),
+            "{:?}",
+            report.errors
+        );
+    }
 }
