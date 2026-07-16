@@ -6,6 +6,8 @@ This project follows semantic versioning once `1.0.0` is released.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-16
+
 ### Added
 
 - Rust CLI for Rails-inspired Eve agent fleet conventions.
@@ -25,13 +27,3 @@ This project follows semantic versioning once `1.0.0` is released.
 - Generated support agent starts with Eve local dev.
 - Eve session creation and streaming work locally.
 - Vercel AI Gateway live model call completed with `openai/gpt-5.5`.
-
-## [1.0.0] - Planned
-
-The first stable release is planned to include:
-
-- Published installable binaries.
-- Stable manifest conventions.
-- Documented compatibility guarantees for generated Eve app structure.
-- Release artifacts produced through CI.
-- End-to-end smoke test documentation.
