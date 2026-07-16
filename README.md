@@ -236,4 +236,4 @@ https://raw.githubusercontent.com/DSamuelHodge/eve-rails-cli/main/SKILL.md
 
 ## Contributing
 
-Contributions are welcome. See [.github/CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and the GitHub issue and pull request templates.
+Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and the GitHub issue and pull request templates.
