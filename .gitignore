@@ -14,6 +14,11 @@
 .env.*
 !.env.example
 
+# Local maintainer-only agent guidance and internal planning docs
+.agents/
+SPEC.md
+RAILS_PHILOSOPHY_FOR_EVE.md
+
 # Generated Eve app local artifacts
 agents/*/node_modules/
 agents/*/.eve/
