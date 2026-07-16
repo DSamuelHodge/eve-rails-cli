@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use minijinja::{Environment, context};
 use serde::Deserialize;
 
 #[derive(Debug, Parser)]
@@ -450,24 +451,54 @@ fn render(command: RenderCommand) -> Result<()> {
     let report = validate_manifest(&manifest, &catalog);
     ensure_valid(&report)?;
 
-    let scope = if command.all {
-        "all agents".to_string()
+    let agents: Vec<&AgentManifest> = if command.all {
+        manifest.agents.iter().collect()
     } else if let Some(agent) = command.agent {
-        format!("agent {agent}")
+        vec![
+            manifest
+                .agents
+                .iter()
+                .find(|candidate| candidate.name == agent)
+                .with_context(|| format!("agent '{agent}' not found"))?,
+        ]
     } else {
         bail!("pass --agent <name> or --all");
     };
 
-    println!(
-        "Render {scope} using {} ({})",
-        command.templates.display(),
-        if command.check {
-            "check only"
-        } else {
-            "write mode"
+    let renderer = Renderer::load(&command.templates)?;
+    let mut stale = Vec::new();
+
+    for agent in agents {
+        let files = renderer.render_agent(agent, &manifest, &catalog)?;
+        for rendered in files {
+            if command.check {
+                if !file_matches(&rendered.path, &rendered.content)? {
+                    stale.push(rendered.path);
+                }
+            } else {
+                if let Some(parent) = rendered.path.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create output directory '{}'", parent.display())
+                    })?;
+                }
+                fs::write(&rendered.path, rendered.content)
+                    .with_context(|| format!("failed to write '{}'", rendered.path.display()))?;
+                println!("wrote {}", rendered.path.display());
+            }
         }
-    );
-    println!("Rendering is stubbed until PR 2.");
+    }
+
+    if command.check {
+        if stale.is_empty() {
+            println!("Generated files are fresh.");
+        } else {
+            for path in &stale {
+                println!("stale {}", path.display());
+            }
+            bail!("{} generated file(s) are stale", stale.len());
+        }
+    }
+
     Ok(())
 }
 
@@ -751,6 +782,238 @@ fn load_catalog(path: &Path) -> Result<CatalogManifest> {
     let catalog: CatalogManifest = serde_yaml::from_str(&source)
         .with_context(|| format!("failed to parse catalog '{}'", path.display()))?;
     Ok(catalog)
+}
+
+struct Renderer<'source> {
+    env: Environment<'source>,
+}
+
+struct RenderedFile {
+    path: PathBuf,
+    content: String,
+}
+
+impl<'source> Renderer<'source> {
+    fn load(template_dir: &Path) -> Result<Self> {
+        let mut env = Environment::new();
+        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+
+        for template_name in ["instructions.md.j2", "agent.ts.j2"] {
+            let path = template_dir.join(template_name);
+            let source = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read template '{}'", path.display()))?;
+            env.add_template_owned(template_name.to_string(), source)
+                .with_context(|| format!("failed to load template '{}'", path.display()))?;
+        }
+
+        Ok(Self { env })
+    }
+
+    fn render_agent(
+        &self,
+        agent: &AgentManifest,
+        manifest: &FleetManifest,
+        catalog: &CatalogManifest,
+    ) -> Result<Vec<RenderedFile>> {
+        let output_root = PathBuf::from("agents").join(&agent.name).join("agent");
+        let model = agent
+            .model
+            .as_deref()
+            .or(manifest.defaults.model.as_deref())
+            .unwrap_or_default();
+        let owner = agent
+            .owner
+            .as_deref()
+            .or(manifest.defaults.owner.as_deref())
+            .unwrap_or_default();
+        let version = agent.version.as_deref().unwrap_or("1.0.0");
+        let agent_context = context! {
+            name => agent.name.as_str(),
+            version => version,
+            owner => owner,
+            responsibility => agent.responsibility.as_str(),
+            model => model,
+        };
+
+        let instructions = self
+            .env
+            .get_template("instructions.md.j2")?
+            .render(context! { agent => agent_context.clone() })?;
+        let agent_ts = self
+            .env
+            .get_template("agent.ts.j2")?
+            .render(context! { agent => agent_context })?;
+
+        Ok(vec![
+            RenderedFile {
+                path: output_root.join("instructions.md"),
+                content: with_generated_header(
+                    CommentStyle::Hash,
+                    &agent.name,
+                    "instructions.md.j2",
+                    &instructions,
+                ),
+            },
+            RenderedFile {
+                path: output_root.join("agent.ts"),
+                content: with_generated_header(
+                    CommentStyle::Slash,
+                    &agent.name,
+                    "agent.ts.j2",
+                    &agent_ts,
+                ),
+            },
+            RenderedFile {
+                path: output_root.join("agent.manifest.yml"),
+                content: render_agent_manifest(agent, manifest),
+            },
+            RenderedFile {
+                path: output_root.join("versions.lock"),
+                content: render_versions_lock(agent, manifest, catalog),
+            },
+        ])
+    }
+}
+
+enum CommentStyle {
+    Hash,
+    Slash,
+}
+
+fn with_generated_header(style: CommentStyle, agent: &str, template: &str, body: &str) -> String {
+    let prefix = match style {
+        CommentStyle::Hash => "#",
+        CommentStyle::Slash => "//",
+    };
+    format!(
+        "{prefix} Generated by eve-rails. Do not edit generated regions.\n{prefix} agent: {agent}\n{prefix} template: {template}\n\n{}\n",
+        body.trim_end()
+    )
+}
+
+fn render_agent_manifest(agent: &AgentManifest, manifest: &FleetManifest) -> String {
+    let mut output = String::new();
+    output.push_str("# Generated by eve-rails. Do not edit generated regions.\n");
+    output.push_str(&format!("name: {}\n", agent.name));
+    output.push_str(&format!(
+        "version: {}\n",
+        agent.version.as_deref().unwrap_or("1.0.0")
+    ));
+    output.push_str(&format!(
+        "owner: {}\n",
+        agent
+            .owner
+            .as_deref()
+            .or(manifest.defaults.owner.as_deref())
+            .unwrap_or("")
+    ));
+    output.push_str(&format!(
+        "model: {}\n",
+        agent
+            .model
+            .as_deref()
+            .or(manifest.defaults.model.as_deref())
+            .unwrap_or("")
+    ));
+    output.push_str(&format!("responsibility: {:?}\n", agent.responsibility));
+    output.push_str("uses:\n");
+    append_component_map(&mut output, "tools", &agent.tools);
+    append_component_map(&mut output, "skills", &agent.skills);
+    append_component_map(&mut output, "memory", &agent.memory);
+    let channels = manifest
+        .defaults
+        .channels
+        .iter()
+        .chain(agent.channels.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let evals = manifest
+        .defaults
+        .evals
+        .iter()
+        .chain(agent.evals.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    append_string_list(&mut output, "channels", &channels);
+    append_string_list(&mut output, "evals", &evals);
+    output
+}
+
+fn render_versions_lock(
+    agent: &AgentManifest,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Generated by eve-rails. Do not edit generated regions.\n");
+    output.push_str("resolved:\n");
+    append_lock_entries(&mut output, "tools", &agent.tools);
+    append_lock_entries(&mut output, "skills", &agent.skills);
+    append_lock_entries(&mut output, "memory", &agent.memory);
+    for channel in manifest
+        .defaults
+        .channels
+        .iter()
+        .chain(agent.channels.iter())
+    {
+        let version = catalog_version(&catalog.channels, channel);
+        output.push_str(&format!(
+            "  catalog/channels/{channel}@{version}:\n    source: manifests/catalog.yml\n"
+        ));
+    }
+    for eval in manifest.defaults.evals.iter().chain(agent.evals.iter()) {
+        let version = catalog_version(&catalog.evals, eval);
+        output.push_str(&format!(
+            "  catalog/evals/{eval}@{version}:\n    source: manifests/catalog.yml\n"
+        ));
+    }
+    output
+}
+
+fn catalog_version<'a>(components: &'a BTreeMap<String, CatalogComponent>, name: &str) -> &'a str {
+    components
+        .get(name)
+        .map(|component| component.version.as_str())
+        .unwrap_or("unknown")
+}
+
+fn append_component_map(output: &mut String, label: &str, components: &ComponentMap) {
+    output.push_str(&format!("  {label}:\n"));
+    if components.is_empty() {
+        output.push_str("    {}\n");
+        return;
+    }
+    for (name, version) in components {
+        output.push_str(&format!("    {name}: {version}\n"));
+    }
+}
+
+fn append_string_list(output: &mut String, label: &str, values: &[String]) {
+    output.push_str(&format!("  {label}:"));
+    if values.is_empty() {
+        output.push_str(" []\n");
+        return;
+    }
+    output.push('\n');
+    for value in values {
+        output.push_str(&format!("    - {value}\n"));
+    }
+}
+
+fn append_lock_entries(output: &mut String, kind: &str, components: &ComponentMap) {
+    for (name, version) in components {
+        output.push_str(&format!(
+            "  catalog/{kind}/{name}@{version}:\n    source: manifests/catalog.yml\n"
+        ));
+    }
+}
+
+fn file_matches(path: &Path, expected: &str) -> Result<bool> {
+    match fs::read_to_string(path) {
+        Ok(actual) => Ok(actual == expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("failed to read '{}'", path.display())),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1067,6 +1330,7 @@ fn node(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn manifest(source: &str) -> FleetManifest {
         serde_yaml::from_str(source).expect("manifest should parse")
@@ -1230,5 +1494,71 @@ channels:
             "{:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn renderer_outputs_core_agent_files() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let manifest = valid_manifest();
+        let catalog = valid_catalog();
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &catalog)
+            .expect("agent renders");
+
+        assert_eq!(files.len(), 4);
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("instructions.md")
+                    && file.content.contains("You are the billing agent."))
+        );
+        assert!(files.iter().any(|file| file.path.ends_with("agent.ts")
+            && file.content.contains("model: \"openai/gpt-5.5\"")));
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("agent.manifest.yml")
+                    && file.content.contains("    - web"))
+        );
+        assert!(files.iter().any(|file| file.path.ends_with("versions.lock")
+            && file.content.contains("catalog/evals/standard@1.0.0")));
+    }
+
+    #[test]
+    fn renderer_fails_on_undefined_template_variables() {
+        let dir = temp_dir("undefined-template");
+        fs::create_dir_all(&dir).expect("temp dir");
+        fs::write(
+            dir.join("instructions.md.j2"),
+            "hello {{ agent.missing_field }}",
+        )
+        .expect("template");
+        fs::write(dir.join("agent.ts.j2"), "export default {};").expect("template");
+
+        let renderer = Renderer::load(&dir).expect("renderer loads");
+        let manifest = valid_manifest();
+        let catalog = valid_catalog();
+        let result = renderer.render_agent(&manifest.agents[0], &manifest, &catalog);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn file_matches_detects_stale_output() {
+        let dir = temp_dir("stale-output");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("generated.txt");
+        fs::write(&file, "old").expect("write");
+
+        assert!(!file_matches(&file, "new").expect("compare"));
+        assert!(file_matches(&file, "old").expect("compare"));
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("eve-rails-{name}-{nanos}"))
     }
 }
