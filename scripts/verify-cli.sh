@@ -56,10 +56,11 @@ trap 'rm -rf "$TMP"' EXIT
     --timeout 30s \
     --json >/dev/null
   "$BIN" plan manifests/agents.yml --json >/dev/null
+  "$BIN" generate batch manifests/agents.yml --dry-run --json >/dev/null
   "$BIN" apply manifests/agents.yml --json >/dev/null
   "$BIN" render --all --check >/dev/null
   "$BIN" doctor --all --templates --updates --env production --connections --budgets >/dev/null
-  "$BIN" doctor --all --templates --updates --fix >/dev/null
+  "$BIN" doctor --all --templates --updates --fix --dry-run >/dev/null
   "$BIN" outdated manifests/agents.yml --json >/dev/null
   "$BIN" update --agent support --minor --plan --json >/dev/null
   "$BIN" hotload --agent support --current 1.0.0 skill:handle_refund@1.0.1 --json >/dev/null

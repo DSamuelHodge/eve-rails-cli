@@ -64,7 +64,7 @@ npm exec -- eve info --json
 
 ## Requirements
 
-- Rust 1.97 or newer.
+- Rust 1.97 or newer. Install Rust with [rustup](https://rustup.rs/); many OS package managers ship older Rust versions that cannot compile Rust 2024 crates.
 - Node.js 24 or newer when testing generated Eve agents.
 - Optional Vercel AI Gateway credentials for live model calls.
 
@@ -178,7 +178,7 @@ eve-rails-cli init my-fleet --template basic --dry-run
 eve-rails-cli generate agent support --dry-run
 eve-rails-cli generate tool search_customers --side-effects read
 eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
-eve-rails-cli generate batch manifests/batch.yml --dry-run
+eve-rails-cli generate batch manifests/agents.yml --dry-run
 ```
 
 Step 2. Planning, rendering, and inspection:
@@ -203,7 +203,7 @@ eve-rails-cli preview --agent support --dry-run
 Step 4. Versioning, migrations, deploys, and rollback:
 
 ```sh
-eve-rails-cli outdated --agent support
+eve-rails-cli outdated manifests/agents.yml
 eve-rails-cli update --agent support --minor --plan
 eve-rails-cli hotload --agent support skill:triage_customer_issue@1.0.1
 eve-rails-cli migrate --agent support --env production --dry-run

@@ -182,7 +182,7 @@ eve-rails-cli generate approval required
 eve-rails-cli generate eval refund_policy
 eve-rails-cli generate memory customer_profile --retention 180d
 eve-rails-cli generate migration customer_profile_v2
-eve-rails-cli generate batch manifests/batch.yml --dry-run
+eve-rails-cli generate batch manifests/agents.yml --dry-run
 ```
 
 Validate safety and freshness:

@@ -19,7 +19,7 @@ use renderer::*;
 use versioning::*;
 
 #[derive(Debug, Parser)]
-#[command(name = "eve-rails")]
+#[command(name = "eve-rails-cli")]
 #[command(about = "Rails-inspired convention layer for Eve agent fleets")]
 #[command(version)]
 struct Cli {
@@ -76,7 +76,7 @@ struct ManifestCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long, alias = "template-dir", default_value = "templates/agent")]
     templates: PathBuf,
 
     /// Emit machine-readable JSON.
@@ -141,7 +141,7 @@ struct RenderCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long, alias = "template-dir", default_value = "templates/agent")]
     templates: PathBuf,
 }
 
@@ -162,6 +162,10 @@ struct DoctorCommand {
     /// Plan safe mechanical repairs.
     #[arg(long)]
     fix: bool,
+
+    /// Show planned repairs and checks without writing files.
+    #[arg(long)]
+    dry_run: bool,
 
     /// Environment name from environments.yml.
     #[arg(long)]
@@ -213,7 +217,7 @@ enum GenerateComponent {
     Approval(GenerateNamed),
     Eval(GenerateNamed),
     Memory(GenerateNamed),
-    Batch(ManifestCommand),
+    Batch(BatchGenerateCommand),
     Migration(GenerateNamed),
 }
 
@@ -320,6 +324,29 @@ struct GenerateNamed {
     /// Overwrite existing generated files where safe.
     #[arg(long)]
     force: bool,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct BatchGenerateCommand {
+    /// Path to the fleet manifest.
+    #[arg(default_value = "manifests/agents.yml")]
+    manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
+    /// Path to the template directory.
+    #[arg(long, alias = "template-dir", default_value = "templates/agent")]
+    templates: PathBuf,
+
+    /// Show planned changes without writing files.
+    #[arg(long)]
+    dry_run: bool,
 
     /// Emit machine-readable JSON.
     #[arg(long)]
@@ -438,7 +465,7 @@ struct DeployCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long, alias = "templates", default_value = "templates/agent")]
     template_dir: PathBuf,
 
     /// Emit machine-readable JSON.
@@ -527,7 +554,7 @@ struct RollbackCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long, alias = "templates", default_value = "templates/agent")]
     template_dir: PathBuf,
 
     /// Emit machine-readable JSON.
@@ -550,7 +577,7 @@ struct AgentCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long, alias = "templates", default_value = "templates/agent")]
     template_dir: PathBuf,
 
     /// Emit machine-readable JSON.
@@ -581,7 +608,7 @@ struct GraphCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long, alias = "templates", default_value = "templates/agent")]
     template_dir: PathBuf,
 }
 
@@ -1128,6 +1155,7 @@ fn doctor(command: DoctorCommand) -> Result<()> {
             "all": command.all,
             "updates": command.updates,
             "templates": command.templates,
+            "dry_run": command.dry_run,
             "passed": passed,
             "checks": report.checks,
         });
@@ -1154,7 +1182,7 @@ fn doctor(command: DoctorCommand) -> Result<()> {
 
 fn generate(command: GenerateCommand) -> Result<()> {
     match command.component {
-        GenerateComponent::Batch(command) => plan(command),
+        GenerateComponent::Batch(command) => generate_batch(command),
         GenerateComponent::Agent(command) => generate_named(GeneratorKind::Agent, command),
         GenerateComponent::Tool(command) => generate_named(GeneratorKind::Tool, command),
         GenerateComponent::Skill(command) => generate_named(GeneratorKind::Skill, command),
@@ -1166,6 +1194,16 @@ fn generate(command: GenerateCommand) -> Result<()> {
         GenerateComponent::Memory(command) => generate_named(GeneratorKind::Memory, command),
         GenerateComponent::Migration(command) => generate_named(GeneratorKind::Migration, command),
     }
+}
+
+fn generate_batch(command: BatchGenerateCommand) -> Result<()> {
+    let plan_command = ManifestCommand {
+        manifest: command.manifest,
+        catalog: command.catalog,
+        templates: command.templates,
+        json: command.json,
+    };
+    plan(plan_command)
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -1626,6 +1664,7 @@ fn deploy_preflight(
         updates: true,
         templates: true,
         fix: false,
+        dry_run: false,
         env: Some(command.env.clone()),
         connections: false,
         budgets: true,
@@ -1797,6 +1836,7 @@ fn summarize_agent(
         updates: true,
         templates: true,
         fix: false,
+        dry_run: false,
         env: None,
         connections: false,
         budgets: true,
@@ -3380,6 +3420,7 @@ agents:
             updates,
             templates,
             fix: false,
+            dry_run: false,
             env: None,
             connections: false,
             budgets: true,
