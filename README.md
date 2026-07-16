@@ -30,20 +30,20 @@ eve-rails-cli --help
 
 ## Commands
 
-```sh
-eve-rails-cli --help
-eve-rails-cli plan manifests/agents.yml
-eve-rails-cli render --all --check
-eve-rails-cli doctor --all
-eve-rails-cli generate agent support --dry-run
-eve-rails-cli outdated --agent support
-eve-rails-cli update --agent support --minor
-eve-rails-cli hotload --agent support --skill handle_refund@2.0.1
-eve-rails-cli deploy --agent support --env staging --require-evals --require-doctor
-eve-rails-cli rollback --agent support --to 1.3.2
-eve-rails-cli inspect --agent support
-eve-rails-cli graph --all --format mermaid
-```
+| Command | Example |
+| --- | --- |
+| ![help](https://img.shields.io/badge/help-reference-64748b) | `eve-rails-cli --help` |
+| ![plan](https://img.shields.io/badge/plan-preview-2563eb) | `eve-rails-cli plan manifests/agents.yml` |
+| ![render](https://img.shields.io/badge/render-files-7c3aed) | `eve-rails-cli render --all --check` |
+| ![doctor](https://img.shields.io/badge/doctor-diagnostics-059669) | `eve-rails-cli doctor --all` |
+| ![generate](https://img.shields.io/badge/generate-scaffold-f97316) | `eve-rails-cli generate agent support --dry-run` |
+| ![outdated](https://img.shields.io/badge/outdated-updates-eab308) | `eve-rails-cli outdated --agent support` |
+| ![update](https://img.shields.io/badge/update-versions-0891b2) | `eve-rails-cli update --agent support --minor` |
+| ![hotload](https://img.shields.io/badge/hotload-compatible-db2777) | `eve-rails-cli hotload --agent support --skill handle_refund@2.0.1` |
+| ![deploy](https://img.shields.io/badge/deploy-gates-16a34a) | `eve-rails-cli deploy --agent support --env staging --require-evals --require-doctor` |
+| ![rollback](https://img.shields.io/badge/rollback-restore-dc2626) | `eve-rails-cli rollback --agent support --to 1.3.2` |
+| ![inspect](https://img.shields.io/badge/inspect-compose-4f46e5) | `eve-rails-cli inspect --agent support` |
+| ![graph](https://img.shields.io/badge/graph-map-0f766e) | `eve-rails-cli graph --all --format mermaid` |
 
 ## Repository Layout
 
