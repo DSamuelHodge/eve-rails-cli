@@ -713,7 +713,11 @@ pub(super) fn ensure_valid(report: &ValidationReport) -> Result<()> {
     if report.errors.is_empty() {
         Ok(())
     } else {
-        bail!("validation failed with {} error(s)", report.errors.len())
+        bail!(
+            "validation failed with {} error(s): {}",
+            report.errors.len(),
+            report.errors.join("; ")
+        )
     }
 }
 

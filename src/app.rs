@@ -2516,7 +2516,7 @@ fn default_manifest_yaml() -> &'static str {
 }
 
 fn default_catalog_yaml() -> &'static str {
-    "tools:\nskills:\nevals:\napprovals:\nmemory:\nchannels:\nschedules:\n"
+    "tools:\nskills:\nevals:\napprovals:\n  required:\n    version: 1.0.0\n  on-risk:\n    version: 1.0.0\nmemory:\nchannels:\nschedules:\n"
 }
 
 fn append_yaml_list_entry(source: String, section: &str, entry: &str) -> String {
