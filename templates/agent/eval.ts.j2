@@ -1,0 +1,8 @@
+import { defineEval } from "eve";
+
+export default defineEval({
+  name: "{{ eval.name }}",
+  async run() {
+    throw new Error("{{ eval.name }} eval is not implemented yet");
+  },
+});

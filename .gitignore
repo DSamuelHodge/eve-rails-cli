@@ -1,0 +1,15 @@
+/target/
+
+# Rust
+*.rs.bk
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local environment
+.env
+.env.*
+!.env.example

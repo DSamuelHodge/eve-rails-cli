@@ -1,0 +1,9 @@
+import { defineTool } from "eve";
+
+export default defineTool({
+  description: "{{ tool.description }}",
+  input: {},
+  async run() {
+    throw new Error("{{ tool.name }} is not implemented yet");
+  },
+});

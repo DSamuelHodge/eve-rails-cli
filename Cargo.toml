@@ -1,0 +1,16 @@
+[package]
+name = "eve-rails-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Rails-inspired convention layer for Eve agent fleets"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+minijinja = "2.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+walkdir = "2.5"

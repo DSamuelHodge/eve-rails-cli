@@ -1,0 +1,15 @@
+environments:
+  development:
+    observability: verbose
+    connections: fake
+  test:
+    observability: minimal
+    connections: mocked
+  staging:
+    observability: enabled
+    connections: restricted
+  production:
+    observability: required
+    connections: real
+    require_doctor: true
+    require_evals: true
