@@ -44,3 +44,8 @@ channels:
     version: 1.0.0
   slack:
     version: 1.0.0
+
+schedules:
+  weekday_triage:
+    version: 1.0.0
+    schedule: "0 9 * * 1-5"

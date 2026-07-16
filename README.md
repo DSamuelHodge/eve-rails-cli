@@ -37,6 +37,7 @@ eve-rails-cli --help
 | ![render](https://img.shields.io/badge/render-files-7c3aed) | `eve-rails-cli render --all --check` |
 | ![doctor](https://img.shields.io/badge/doctor-diagnostics-059669) | `eve-rails-cli doctor --all` |
 | ![generate](https://img.shields.io/badge/generate-scaffold-f97316) | `eve-rails-cli generate agent support --dry-run` |
+| ![schedule](https://img.shields.io/badge/schedule-cron-9333ea) | `eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"` |
 | ![outdated](https://img.shields.io/badge/outdated-updates-eab308) | `eve-rails-cli outdated --agent support` |
 | ![update](https://img.shields.io/badge/update-versions-0891b2) | `eve-rails-cli update --agent support --minor` |
 | ![hotload](https://img.shields.io/badge/hotload-compatible-db2777) | `eve-rails-cli hotload --agent support --skill handle_refund@2.0.1` |

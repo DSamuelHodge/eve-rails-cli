@@ -24,6 +24,9 @@ resolved:
   catalog/channels/slack@1.0.0:
     source: manifests/catalog.yml
     digest: fnv64:938e0250aa234a6a
+  catalog/schedules/weekday_triage@1.0.0:
+    source: manifests/catalog.yml
+    digest: fnv64:de841c8d0ed9b297
   catalog/evals/standard@1.0.0:
     source: manifests/catalog.yml
     digest: fnv64:63a9b14574577346

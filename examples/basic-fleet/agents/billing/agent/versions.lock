@@ -18,6 +18,9 @@ resolved:
   catalog/channels/web@1.0.0:
     source: manifests/catalog.yml
     digest: fnv64:e4c17761f77a5148
+  catalog/schedules/weekday_triage@1.0.0:
+    source: manifests/catalog.yml
+    digest: fnv64:de841c8d0ed9b297
   catalog/evals/standard@1.0.0:
     source: manifests/catalog.yml
     digest: fnv64:63a9b14574577346

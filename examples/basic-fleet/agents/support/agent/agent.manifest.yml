@@ -17,6 +17,8 @@ uses:
   channels:
     - web
     - slack
+  schedules:
+    - weekday_triage
   evals:
     - standard
     - tone

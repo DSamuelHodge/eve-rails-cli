@@ -135,6 +135,7 @@ enum GenerateComponent {
     Skill(GenerateNamed),
     Subagent(GenerateNamed),
     Channel(GenerateNamed),
+    Schedule(GenerateNamed),
     Approval(GenerateNamed),
     Eval(GenerateNamed),
     Memory(GenerateNamed),
@@ -177,6 +178,66 @@ struct GenerateNamed {
     /// Memory retention period, such as 180d.
     #[arg(long)]
     retention: Option<String>,
+
+    /// Tools to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_tools: Vec<String>,
+
+    /// Skills to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_skills: Vec<String>,
+
+    /// Subagents to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_subagents: Vec<String>,
+
+    /// Channels to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_channels: Vec<String>,
+
+    /// Evals to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_evals: Vec<String>,
+
+    /// Memory schemas to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_memory: Vec<String>,
+
+    /// Schedules to attach when generating an agent.
+    #[arg(long, value_delimiter = ',')]
+    with_schedules: Vec<String>,
+
+    /// Approval policy to apply to generated agent tools.
+    #[arg(long)]
+    approval: Option<String>,
+
+    /// Cron expression for a generated schedule component.
+    #[arg(long)]
+    schedule: Option<String>,
+
+    /// Risk classification.
+    #[arg(long)]
+    risk: Option<String>,
+
+    /// Authentication mode.
+    #[arg(long)]
+    auth: Option<String>,
+
+    /// Visibility policy.
+    #[arg(long)]
+    visibility: Option<String>,
+
+    /// Cost budget for generated agent metadata.
+    #[arg(long)]
+    cost_budget: Option<f64>,
+
+    /// Token budget for generated agent metadata.
+    #[arg(long)]
+    token_budget: Option<u64>,
+
+    /// Timeout for generated agent metadata.
+    #[arg(long)]
+    timeout: Option<String>,
 
     /// Show planned changes without writing files.
     #[arg(long)]
@@ -399,6 +460,8 @@ struct ManifestDefaults {
     #[serde(default)]
     channels: Vec<String>,
     #[serde(default)]
+    schedules: Vec<String>,
+    #[serde(default)]
     evals: Vec<String>,
     approvals: Option<String>,
 }
@@ -411,6 +474,8 @@ struct SharedComponents {
     skills: Vec<String>,
     #[serde(default)]
     memory: Vec<String>,
+    #[serde(default)]
+    schedules: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -429,11 +494,19 @@ struct AgentManifest {
     #[serde(default)]
     channels: Vec<String>,
     #[serde(default)]
+    schedules: Vec<String>,
+    #[serde(default)]
     approvals: BTreeMap<String, String>,
     #[serde(default)]
     evals: Vec<String>,
     #[serde(default)]
     memory: ComponentMap,
+    risk: Option<String>,
+    auth: Option<String>,
+    visibility: Option<String>,
+    cost_budget: Option<f64>,
+    token_budget: Option<u64>,
+    timeout: Option<String>,
 }
 
 type ComponentMap = BTreeMap<String, String>;
@@ -452,6 +525,8 @@ struct CatalogManifest {
     memory: BTreeMap<String, CatalogComponent>,
     #[serde(default)]
     channels: BTreeMap<String, CatalogComponent>,
+    #[serde(default)]
+    schedules: BTreeMap<String, CatalogComponent>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -459,6 +534,7 @@ struct CatalogComponent {
     version: String,
     side_effects: Option<SideEffects>,
     retention: Option<String>,
+    schedule: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, ValueEnum)]
@@ -565,6 +641,10 @@ fn plan(command: ManifestCommand) -> Result<()> {
         println!(
             "  channels: {}",
             agent.channels.len() + manifest.defaults.channels.len()
+        );
+        println!(
+            "  schedules: {}",
+            effective_schedules(agent, &manifest).len()
         );
         println!(
             "  approvals: {}",
@@ -736,6 +816,7 @@ fn generate(command: GenerateCommand) -> Result<()> {
         GenerateComponent::Skill(command) => generate_named(GeneratorKind::Skill, command),
         GenerateComponent::Subagent(command) => generate_named(GeneratorKind::Subagent, command),
         GenerateComponent::Channel(command) => generate_named(GeneratorKind::Channel, command),
+        GenerateComponent::Schedule(command) => generate_named(GeneratorKind::Schedule, command),
         GenerateComponent::Approval(command) => generate_named(GeneratorKind::Approval, command),
         GenerateComponent::Eval(command) => generate_named(GeneratorKind::Eval, command),
         GenerateComponent::Memory(command) => generate_named(GeneratorKind::Memory, command),
@@ -1157,6 +1238,7 @@ struct AgentSummary {
     skills: ComponentSummary,
     subagents: Vec<String>,
     channels: Vec<String>,
+    schedules: Vec<String>,
     approvals: BTreeMap<String, String>,
     evals: Vec<String>,
     memory: ComponentSummary,
@@ -1220,6 +1302,7 @@ fn summarize_agent(
             .chain(agent.channels.iter())
             .cloned()
             .collect(),
+        schedules: effective_schedules(agent, manifest),
         approvals: agent.approvals.clone(),
         evals: effective_evals(agent, manifest),
         memory: resolved_component_summary(&agent.memory, &catalog.memory),
@@ -1378,6 +1461,7 @@ fn inspect(command: AgentCommand) -> Result<()> {
     println!("  skills: {}", format_components(&summary.skills));
     println!("  subagents: {}", summary.subagents.join(", "));
     println!("  channels: {}", summary.channels.join(", "));
+    println!("  schedules: {}", summary.schedules.join(", "));
     println!("  approvals: {}", summary.approvals.len());
     println!("  evals: {}", summary.evals.join(", "));
     println!("  memory: {}", format_components(&summary.memory));
@@ -1426,6 +1510,9 @@ fn graph(command: GraphCommand) -> Result<()> {
                 for channel in &summary.channels {
                     println!("  -> channels/{channel}");
                 }
+                for schedule in &summary.schedules {
+                    println!("  -> schedules/{schedule}");
+                }
                 for eval in &summary.evals {
                     println!("  -> evals/{eval}");
                 }
@@ -1465,6 +1552,13 @@ fn graph(command: GraphCommand) -> Result<()> {
                         channel
                     );
                 }
+                for schedule in &summary.schedules {
+                    println!(
+                        "  {agent_node} --> schedule_{}[\"schedule:{}\"]",
+                        node(schedule),
+                        schedule
+                    );
+                }
                 for eval in &summary.evals {
                     println!("  {agent_node} --> eval_{}[\"eval:{}\"]", node(eval), eval);
                 }
@@ -1493,6 +1587,7 @@ enum GeneratorKind {
     Skill,
     Subagent,
     Channel,
+    Schedule,
     Approval,
     Eval,
     Memory,
@@ -1507,6 +1602,7 @@ impl GeneratorKind {
             GeneratorKind::Skill => "skill",
             GeneratorKind::Subagent => "subagent",
             GeneratorKind::Channel => "channel",
+            GeneratorKind::Schedule => "schedule",
             GeneratorKind::Approval => "approval",
             GeneratorKind::Eval => "eval",
             GeneratorKind::Memory => "memory",
@@ -1580,6 +1676,7 @@ fn plan_generate(kind: GeneratorKind, command: &GenerateNamed) -> Result<Vec<Pla
         GeneratorKind::Tool
         | GeneratorKind::Skill
         | GeneratorKind::Channel
+        | GeneratorKind::Schedule
         | GeneratorKind::Approval
         | GeneratorKind::Eval
         | GeneratorKind::Memory => plan_generate_catalog_component(kind, command),
@@ -1598,8 +1695,8 @@ fn plan_generate_agent(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
         );
     }
 
-    let entry = format!(
-        "\n  - name: {name}\n    version: {version}\n    owner: {owner}\n    responsibility: {responsibility:?}\n    model: {model}\n    tools: {{}}\n    skills: {{}}\n    subagents: []\n    channels: []\n    approvals: {{}}\n    evals: []\n    memory: {{}}\n",
+    let mut entry = format!(
+        "\n  - name: {name}\n    version: {version}\n    owner: {owner}\n    responsibility: {responsibility:?}\n    model: {model}\n",
         name = command.name,
         version = command.version,
         owner = command.owner.as_deref().unwrap_or("agent-platform"),
@@ -1609,6 +1706,24 @@ fn plan_generate_agent(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
             .unwrap_or("Describe this agent's bounded responsibility."),
         model = command.model.as_deref().unwrap_or("openai/gpt-5.5"),
     );
+    append_generated_component_map(&mut entry, "tools", &command.with_tools);
+    append_generated_component_map(&mut entry, "skills", &command.with_skills);
+    append_generated_string_list(&mut entry, "subagents", &command.with_subagents);
+    append_generated_string_list(&mut entry, "channels", &command.with_channels);
+    append_generated_string_list(&mut entry, "schedules", &command.with_schedules);
+    append_generated_approvals(&mut entry, command);
+    append_generated_string_list(&mut entry, "evals", &command.with_evals);
+    append_generated_component_map(&mut entry, "memory", &command.with_memory);
+    append_optional_yaml_string(&mut entry, "risk", command.risk.as_deref());
+    append_optional_yaml_string(&mut entry, "auth", command.auth.as_deref());
+    append_optional_yaml_string(&mut entry, "visibility", command.visibility.as_deref());
+    if let Some(cost_budget) = command.cost_budget {
+        entry.push_str(&format!("    cost_budget: {cost_budget}\n"));
+    }
+    if let Some(token_budget) = command.token_budget {
+        entry.push_str(&format!("    token_budget: {token_budget}\n"));
+    }
+    append_optional_yaml_string(&mut entry, "timeout", command.timeout.as_deref());
     let content = append_yaml_list_entry(source, "agents:", &entry);
 
     Ok(vec![PlannedChange {
@@ -1616,6 +1731,49 @@ fn plan_generate_agent(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
         action: change_action(&command.manifest),
         content,
     }])
+}
+
+fn append_generated_component_map(output: &mut String, label: &str, values: &[String]) {
+    output.push_str(&format!("    {label}:"));
+    if values.is_empty() {
+        output.push_str(" {}\n");
+        return;
+    }
+    output.push('\n');
+    for value in values {
+        output.push_str(&format!("      {value}: 1.0.0\n"));
+    }
+}
+
+fn append_generated_string_list(output: &mut String, label: &str, values: &[String]) {
+    output.push_str(&format!("    {label}:"));
+    if values.is_empty() {
+        output.push_str(" []\n");
+        return;
+    }
+    output.push_str(&format!(" [{}]\n", values.join(", ")));
+}
+
+fn append_generated_approvals(output: &mut String, command: &GenerateNamed) {
+    output.push_str("    approvals:");
+    let Some(policy) = command.approval.as_deref() else {
+        output.push_str(" {}\n");
+        return;
+    };
+    if command.with_tools.is_empty() {
+        output.push_str(&format!(" {policy:?}\n"));
+        return;
+    }
+    output.push('\n');
+    for tool in &command.with_tools {
+        output.push_str(&format!("      {tool}: {policy}\n"));
+    }
+}
+
+fn append_optional_yaml_string(output: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        output.push_str(&format!("    {label}: {value:?}\n"));
+    }
 }
 
 fn plan_generate_catalog_component(
@@ -1696,6 +1854,7 @@ fn catalog_section(kind: GeneratorKind) -> &'static str {
         GeneratorKind::Tool => "tools:",
         GeneratorKind::Skill => "skills:",
         GeneratorKind::Channel => "channels:",
+        GeneratorKind::Schedule => "schedules:",
         GeneratorKind::Approval => "approvals:",
         GeneratorKind::Eval => "evals:",
         GeneratorKind::Memory => "memory:",
@@ -1713,6 +1872,12 @@ fn catalog_entry(kind: GeneratorKind, command: &GenerateNamed) -> String {
             entry.push_str(&format!(
                 "    retention: {}\n",
                 command.retention.as_deref().unwrap_or("180d")
+            ));
+        }
+        GeneratorKind::Schedule => {
+            entry.push_str(&format!(
+                "    schedule: {:?}\n",
+                command.schedule.as_deref().unwrap_or("0 9 * * 1-5")
             ));
         }
         _ => {}
@@ -1769,6 +1934,15 @@ fn component_stub(kind: GeneratorKind, command: &GenerateNamed) -> Result<Option
             "ts",
             format!("export default {{\n  name: \"{}\",\n}};\n", command.name),
         ),
+        GeneratorKind::Schedule => (
+            "schedules",
+            "ts",
+            format!(
+                "export default {{\n  name: \"{}\",\n  schedule: {:?},\n}};\n",
+                command.name,
+                command.schedule.as_deref().unwrap_or("0 9 * * 1-5")
+            ),
+        ),
         _ => return Ok(None),
     };
     let path = PathBuf::from("catalog")
@@ -1798,11 +1972,11 @@ fn read_or_default(path: &Path, default: &str) -> Result<String> {
 }
 
 fn default_manifest_yaml() -> &'static str {
-    "defaults:\n  model: openai/gpt-5.5\n  owner: agent-platform\n  channels: []\n  evals: []\n\nagents:\n"
+    "defaults:\n  model: openai/gpt-5.5\n  owner: agent-platform\n  channels: []\n  schedules: []\n  evals: []\n\nagents:\n"
 }
 
 fn default_catalog_yaml() -> &'static str {
-    "tools:\nskills:\nevals:\napprovals:\nmemory:\nchannels:\n"
+    "tools:\nskills:\nevals:\napprovals:\nmemory:\nchannels:\nschedules:\n"
 }
 
 fn append_yaml_list_entry(source: String, section: &str, entry: &str) -> String {
@@ -2071,7 +2245,7 @@ impl<'source> Renderer<'source> {
         let mut env = Environment::new();
         env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
 
-        for template_name in ["instructions.md.j2", "agent.ts.j2"] {
+        for template_name in ["instructions.md.j2", "agent.ts.j2", "schedule.ts.j2"] {
             let path = template_dir.join(template_name);
             let source = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read template '{}'", path.display()))?;
@@ -2117,7 +2291,7 @@ impl<'source> Renderer<'source> {
             .get_template("agent.ts.j2")?
             .render(context! { agent => agent_context })?;
 
-        Ok(vec![
+        let mut files = vec![
             RenderedFile {
                 path: PathBuf::from("agents")
                     .join(&agent.name)
@@ -2160,7 +2334,33 @@ impl<'source> Renderer<'source> {
                 path: output_root.join("versions.lock"),
                 content: render_versions_lock(agent, manifest, catalog),
             },
-        ])
+        ];
+
+        for schedule in effective_schedules(agent, manifest) {
+            let schedule_context = context! {
+                name => schedule.as_str(),
+                schedule => catalog
+                    .schedules
+                    .get(&schedule)
+                    .and_then(|component| component.schedule.as_deref())
+                    .unwrap_or(""),
+            };
+            let schedule_ts = self
+                .env
+                .get_template("schedule.ts.j2")?
+                .render(context! { schedule => schedule_context })?;
+            files.push(RenderedFile {
+                path: output_root.join("schedules").join(format!("{schedule}.ts")),
+                content: with_generated_header(
+                    CommentStyle::Slash,
+                    &agent.name,
+                    "schedule.ts.j2",
+                    &schedule_ts,
+                ),
+            });
+        }
+
+        Ok(files)
     }
 }
 
@@ -2292,6 +2492,7 @@ fn render_agent_manifest(agent: &AgentManifest, manifest: &FleetManifest) -> Str
         .chain(agent.channels.iter())
         .cloned()
         .collect::<Vec<_>>();
+    let schedules = effective_schedules(agent, manifest);
     let evals = manifest
         .defaults
         .evals
@@ -2300,7 +2501,18 @@ fn render_agent_manifest(agent: &AgentManifest, manifest: &FleetManifest) -> Str
         .cloned()
         .collect::<Vec<_>>();
     append_string_list(&mut output, "channels", &channels);
+    append_string_list(&mut output, "schedules", &schedules);
     append_string_list(&mut output, "evals", &evals);
+    append_optional_string(&mut output, "risk", agent.risk.as_deref());
+    append_optional_string(&mut output, "auth", agent.auth.as_deref());
+    append_optional_string(&mut output, "visibility", agent.visibility.as_deref());
+    if let Some(cost_budget) = agent.cost_budget {
+        output.push_str(&format!("cost_budget: {cost_budget}\n"));
+    }
+    if let Some(token_budget) = agent.token_budget {
+        output.push_str(&format!("token_budget: {token_budget}\n"));
+    }
+    append_optional_string(&mut output, "timeout", agent.timeout.as_deref());
     output
 }
 
@@ -2325,6 +2537,13 @@ fn render_versions_lock(
         let digest = component_digest("channels", channel, version);
         output.push_str(&format!(
             "  catalog/channels/{channel}@{version}:\n    source: manifests/catalog.yml\n    digest: {digest}\n"
+        ));
+    }
+    for schedule in effective_schedules(agent, manifest) {
+        let version = catalog_version(&catalog.schedules, &schedule);
+        let digest = component_digest("schedules", &schedule, version);
+        output.push_str(&format!(
+            "  catalog/schedules/{schedule}@{version}:\n    source: manifests/catalog.yml\n    digest: {digest}\n"
         ));
     }
     for eval in manifest.defaults.evals.iter().chain(agent.evals.iter()) {
@@ -2422,6 +2641,17 @@ fn collect_version_reports(
                 channel,
                 "catalog",
                 &catalog.channels,
+                manifest,
+            );
+        }
+        for schedule in effective_schedules(agent, manifest) {
+            collect_named_report(
+                &mut reports,
+                agent,
+                "schedule",
+                &schedule,
+                "catalog",
+                &catalog.schedules,
                 manifest,
             );
         }
@@ -2646,6 +2876,12 @@ fn append_string_list(output: &mut String, label: &str, values: &[String]) {
     output.push('\n');
     for value in values {
         output.push_str(&format!("    - {value}\n"));
+    }
+}
+
+fn append_optional_string(output: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        output.push_str(&format!("{label}: {value:?}\n"));
     }
 }
 
@@ -2949,6 +3185,13 @@ fn validate_manifest(manifest: &FleetManifest, catalog: &CatalogManifest) -> Val
         &manifest.shared.memory,
         &catalog.memory,
     );
+    validate_named_list(
+        &mut report,
+        "shared",
+        "schedule",
+        &manifest.shared.schedules,
+        &catalog.schedules,
+    );
     if let Some(policy) = &manifest.defaults.approvals {
         validate_policy(&mut report, "defaults", policy, catalog);
     }
@@ -3003,6 +3246,20 @@ fn validate_manifest(manifest: &FleetManifest, catalog: &CatalogManifest) -> Val
             "channel",
             &agent.channels,
             &catalog.channels,
+        );
+        validate_named_list(
+            &mut report,
+            &format!("agent '{}'", agent.name),
+            "schedule",
+            &manifest.defaults.schedules,
+            &catalog.schedules,
+        );
+        validate_named_list(
+            &mut report,
+            &format!("agent '{}'", agent.name),
+            "schedule",
+            &agent.schedules,
+            &catalog.schedules,
         );
         validate_named_list(
             &mut report,
@@ -3197,6 +3454,22 @@ fn is_slug(value: &str) -> bool {
     })
 }
 
+fn effective_schedules(agent: &AgentManifest, manifest: &FleetManifest) -> Vec<String> {
+    let mut schedules = Vec::new();
+    for schedule in manifest
+        .defaults
+        .schedules
+        .iter()
+        .chain(manifest.shared.schedules.iter())
+        .chain(agent.schedules.iter())
+    {
+        if !schedules.contains(schedule) {
+            schedules.push(schedule.clone());
+        }
+    }
+    schedules
+}
+
 fn is_risky_tool(tool: &str, catalog: &CatalogManifest) -> bool {
     let Some(component) = catalog.tools.get(tool) else {
         return false;
@@ -3263,6 +3536,10 @@ memory:
 channels:
   web:
     version: 1.0.0
+schedules:
+  weekday_triage:
+    version: 1.0.0
+    schedule: "0 9 * * 1-5"
 "#,
         )
     }
@@ -3274,6 +3551,7 @@ defaults:
   model: openai/gpt-5.5
   owner: agent-platform
   channels: [web]
+  schedules: [weekday_triage]
   evals: [standard]
 agents:
   - name: billing
@@ -3628,7 +3906,7 @@ channels:
             .render_agent(&manifest.agents[0], &manifest, &catalog)
             .expect("agent renders");
 
-        assert_eq!(files.len(), 7);
+        assert_eq!(files.len(), 8);
         assert!(
             files
                 .iter()
@@ -3645,6 +3923,12 @@ channels:
         );
         assert!(files.iter().any(|file| file.path.ends_with("versions.lock")
             && file.content.contains("catalog/evals/standard@1.0.0")));
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("schedules/weekday_triage.ts")
+                    && file.content.contains("0 9 * * 1-5"))
+        );
     }
 
     #[test]
@@ -3657,6 +3941,7 @@ channels:
         )
         .expect("template");
         fs::write(dir.join("agent.ts.j2"), "export default {};").expect("template");
+        fs::write(dir.join("schedule.ts.j2"), "export default {};").expect("template");
 
         let renderer = Renderer::load(&dir).expect("renderer loads");
         let manifest = valid_manifest();
@@ -3811,13 +4096,28 @@ agents:
         let manifest_path = dir.join("agents.yml");
         fs::write(&manifest_path, default_manifest_yaml()).expect("manifest");
 
-        let command = generate_command("support", manifest_path.clone(), dir.join("catalog.yml"));
+        let mut command =
+            generate_command("support", manifest_path.clone(), dir.join("catalog.yml"));
+        command.with_tools = vec!["search_customers".to_string()];
+        command.with_channels = vec!["web".to_string()];
+        command.with_schedules = vec!["weekday_triage".to_string()];
+        command.approval = Some("on-risk".to_string());
+        command.risk = Some("medium".to_string());
+        command.auth = Some("oauth".to_string());
+        command.visibility = Some("team".to_string());
+        command.cost_budget = Some(10.0);
+        command.token_budget = Some(200_000);
+        command.timeout = Some("10m".to_string());
         let changes = plan_generate(GeneratorKind::Agent, &command).expect("plan");
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, manifest_path);
         assert!(changes[0].content.contains("- name: support"));
-        assert!(changes[0].content.contains("tools: {}"));
+        assert!(changes[0].content.contains("search_customers: 1.0.0"));
+        assert!(changes[0].content.contains("schedules: [weekday_triage]"));
+        assert!(changes[0].content.contains("search_customers: on-risk"));
+        assert!(changes[0].content.contains("risk: \"medium\""));
+        assert!(changes[0].content.contains("token_budget: 200000"));
     }
 
     #[test]
@@ -3838,6 +4138,27 @@ agents:
             changes[1].path,
             PathBuf::from("catalog/tools/refund_customer.ts")
         );
+    }
+
+    #[test]
+    fn generate_schedule_plans_catalog_and_stub() {
+        let dir = temp_dir("generate-schedule");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let catalog_path = dir.join("catalog.yml");
+        fs::write(&catalog_path, default_catalog_yaml()).expect("catalog");
+
+        let mut command = generate_command("weekday_triage", dir.join("agents.yml"), catalog_path);
+        command.schedule = Some("0 9 * * 1-5".to_string());
+        let changes = plan_generate(GeneratorKind::Schedule, &command).expect("plan");
+
+        assert_eq!(changes.len(), 2);
+        assert!(changes[0].content.contains("weekday_triage:"));
+        assert!(changes[0].content.contains("schedule: \"0 9 * * 1-5\""));
+        assert_eq!(
+            changes[1].path,
+            PathBuf::from("catalog/schedules/weekday_triage.ts")
+        );
+        assert!(changes[1].content.contains("0 9 * * 1-5"));
     }
 
     #[test]
@@ -3880,6 +4201,21 @@ agents:
             description: None,
             side_effects: SideEffects::Read,
             retention: None,
+            with_tools: Vec::new(),
+            with_skills: Vec::new(),
+            with_subagents: Vec::new(),
+            with_channels: Vec::new(),
+            with_evals: Vec::new(),
+            with_memory: Vec::new(),
+            with_schedules: Vec::new(),
+            approval: None,
+            schedule: None,
+            risk: None,
+            auth: None,
+            visibility: None,
+            cost_budget: None,
+            token_budget: None,
+            timeout: None,
             dry_run: true,
             force: false,
             json: false,

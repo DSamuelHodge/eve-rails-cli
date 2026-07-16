@@ -5,6 +5,8 @@ This example contains a small Eve Rails fleet with two generated Eve agents:
 - `support`
 - `billing`
 
+The fleet also includes one reusable schedule, `weekday_triage`, rendered to `agent/schedules/weekday_triage.ts` with an Eve `defineSchedule` cron.
+
 It is meant for local smoke tests, documentation, and validating generated Eve-compatible output.
 
 ## Plan The Fleet

@@ -2,6 +2,7 @@ defaults:
   model: openai/gpt-5.5
   owner: agent-platform
   channels: [web]
+  schedules: []
   evals: [standard, tone, tool-selection]
   approvals: on-risk
 
@@ -15,6 +16,8 @@ shared:
     - summarize_thread
   memory:
     - customer_profile
+  schedules:
+    - weekday_triage
 
 agents:
   - name: support
@@ -29,6 +32,7 @@ agents:
       summarize_thread: 1.0.0
     subagents: [policy_checker]
     channels: [slack]
+    schedules: [weekday_triage]
     approvals:
       create_ticket: on-risk
     memory:
