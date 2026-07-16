@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "CLI acceptance failed near line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/target/debug/eve-rails-cli"
@@ -9,6 +10,7 @@ cd "$ROOT"
 cargo build --locked --bin eve-rails-cli
 
 echo "== help =="
+set -x
 "$BIN" --help >/dev/null
 for cmd in init plan apply render doctor generate outdated update hotload deploy eval test preview migrate rollback inspect graph; do
   "$BIN" "$cmd" --help >/dev/null
