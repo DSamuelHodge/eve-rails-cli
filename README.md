@@ -51,20 +51,6 @@ eve-rails-cli --help
 | ![inspect](https://img.shields.io/badge/inspect-compose-4f46e5) | `eve-rails-cli inspect --agent support` |
 | ![graph](https://img.shields.io/badge/graph-map-0f766e) | `eve-rails-cli graph --all --format mermaid` |
 
-## Repository Layout
-
-```txt
-src/                         Rust CLI implementation
-templates/agent/             Reusable agent rendering templates
-examples/basic-fleet/        Runnable demo fleet and generated Eve agents
-catalog/                     Reserved catalog package area
-SPEC.md                      Implementation spec
-RAILS_PHILOSOPHY_FOR_EVE.md  Product and framework philosophy
-.github/                     CI, release automation, issue forms, PR template
-```
-
-The CLI defaults assume a user's own project has root-level `manifests/` and `agents/` directories. This repository keeps demo assets under [`examples/basic-fleet`](examples/basic-fleet/README.md) so generated examples are not confused with framework source.
-
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and the GitHub issue and pull request templates.
