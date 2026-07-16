@@ -1,0 +1,22 @@
+name: Task
+description: Track documentation, CI, release, example, or maintenance work.
+title: "task: "
+labels: ["task"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What needs to be done?
+    validations:
+      required: true
+  - type: textarea
+    id: checklist
+    attributes:
+      label: Checklist
+      value: |
+        - [ ] 
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes

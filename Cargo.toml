@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Rails-inspired convention layer for Eve agent fleets"
 license = "MIT"
+repository = "https://github.com/DSamuelHodge/eve-rails-cli"
+readme = "README.md"
+keywords = ["eve", "agents", "cli", "rails", "ai"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0"

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --locked
+
+  eve-example:
+    name: Eve Example
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        working-directory: examples/basic-fleet/agents/support
+        run: npm install
+
+      - name: Typecheck
+        working-directory: examples/basic-fleet/agents/support
+        run: npm run typecheck
+
+      - name: Eve info
+        working-directory: examples/basic-fleet/agents/support
+        run: npm exec -- eve info --json

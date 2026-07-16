@@ -3701,8 +3701,10 @@ channels:
 
     #[test]
     fn ten_agent_fixture_plans_seventy_files() {
-        let manifest = load_manifest(Path::new("examples/basic-fleet/fixtures/batch-10-agents.yml"))
-            .expect("manifest");
+        let manifest = load_manifest(Path::new(
+            "examples/basic-fleet/fixtures/batch-10-agents.yml",
+        ))
+        .expect("manifest");
         let catalog =
             load_catalog(Path::new("examples/basic-fleet/manifests/catalog.yml")).expect("catalog");
         let report = validate_manifest(&manifest, &catalog);
