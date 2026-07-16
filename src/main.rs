@@ -113,6 +113,10 @@ struct DoctorCommand {
     /// Path to the reusable component catalog.
     #[arg(long, default_value = "manifests/catalog.yml")]
     catalog: PathBuf,
+
+    /// Path to the template directory.
+    #[arg(long, default_value = "templates/agent")]
+    template_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -610,34 +614,39 @@ fn render(command: RenderCommand) -> Result<()> {
 fn doctor(command: DoctorCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
     let catalog = load_catalog(&command.catalog)?;
-    let report = validate_manifest(&manifest, &catalog);
+    let report = run_doctor(&manifest, &catalog, &command)?;
+    let passed = !report.has_failures();
 
     if command.json {
         let output = serde_json::json!({
             "manifest": command.manifest,
             "catalog": command.catalog,
+            "templates_path": command.template_dir,
             "all": command.all,
             "updates": command.updates,
             "templates": command.templates,
-            "passed": report.errors.is_empty(),
-            "errors": report.errors,
-            "warnings": report.warnings,
+            "passed": passed,
+            "checks": report.checks,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
+        return if passed {
+            Ok(())
+        } else {
+            bail!("doctor failed")
+        };
     }
 
     println!("Doctor for {}", command.manifest.display());
     println!("Catalog: {}", command.catalog.display());
+    println!("Templates: {}", command.template_dir.display());
     println!("Agents checked: {}", manifest.agents.len());
-    if command.templates {
-        println!("Template checks requested.");
+    print_doctor_report(&report);
+
+    if passed {
+        Ok(())
+    } else {
+        bail!("doctor failed")
     }
-    if command.updates {
-        println!("Update compatibility checks requested.");
-    }
-    print_validation_report(&report)?;
-    ensure_valid(&report)
 }
 
 fn generate(command: GenerateCommand) -> Result<()> {
@@ -1643,6 +1652,236 @@ struct ValidationReport {
     warnings: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    checks: Vec<DoctorCheck>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorCheck {
+    name: String,
+    status: DoctorStatus,
+    message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum DoctorStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorReport {
+    fn has_failures(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|check| check.status == DoctorStatus::Fail)
+    }
+}
+
+fn run_doctor(
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    command: &DoctorCommand,
+) -> Result<DoctorReport> {
+    let mut checks = Vec::new();
+    let validation = validate_manifest(manifest, catalog);
+
+    push_check(
+        &mut checks,
+        "manifest-schema",
+        validation.errors.is_empty(),
+        "manifest schema and required fields are valid",
+        &format!("{} manifest validation error(s)", validation.errors.len()),
+    );
+    for error in &validation.errors {
+        checks.push(DoctorCheck {
+            name: "manifest-error".to_string(),
+            status: DoctorStatus::Fail,
+            message: error.clone(),
+        });
+    }
+    for warning in &validation.warnings {
+        checks.push(DoctorCheck {
+            name: "manifest-warning".to_string(),
+            status: DoctorStatus::Warn,
+            message: warning.clone(),
+        });
+    }
+
+    push_check(
+        &mut checks,
+        "catalog-references",
+        validation
+            .errors
+            .iter()
+            .all(|error| !error.contains("references missing")),
+        "all manifest references resolve against catalog",
+        "one or more manifest references are missing from catalog",
+    );
+
+    push_check(
+        &mut checks,
+        "approval-coverage",
+        validation
+            .errors
+            .iter()
+            .all(|error| !error.contains("risky tool")),
+        "risky tools have approval coverage",
+        "one or more risky tools lack approval coverage",
+    );
+
+    push_check(
+        &mut checks,
+        "memory-retention",
+        validation
+            .errors
+            .iter()
+            .all(|error| !error.contains("must declare retention")),
+        "memory schemas declare retention",
+        "one or more memory schemas are missing retention",
+    );
+
+    if command.templates {
+        add_template_checks(&mut checks, manifest, catalog, &command.template_dir)?;
+    }
+    if command.updates {
+        add_update_checks(&mut checks, manifest, catalog, &command.template_dir)?;
+    }
+
+    Ok(DoctorReport { checks })
+}
+
+fn add_template_checks(
+    checks: &mut Vec<DoctorCheck>,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    template_dir: &Path,
+) -> Result<()> {
+    let plan = batch_plan(manifest, catalog, template_dir)?;
+    let stale = plan
+        .operations
+        .iter()
+        .filter(|operation| operation.action != BatchAction::Skip)
+        .count();
+
+    push_check(
+        checks,
+        "templates-render",
+        true,
+        "templates render without undefined variables",
+        "templates failed to render",
+    );
+    push_check(
+        checks,
+        "generated-output-fresh",
+        stale == 0,
+        "generated files are fresh",
+        &format!("{stale} generated file(s) are stale or missing"),
+    );
+    push_check(
+        checks,
+        "generated-metadata",
+        generated_metadata_present(&plan),
+        "generated files include metadata headers",
+        "one or more generated files are missing metadata headers",
+    );
+
+    Ok(())
+}
+
+fn add_update_checks(
+    checks: &mut Vec<DoctorCheck>,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    template_dir: &Path,
+) -> Result<()> {
+    let plan = batch_plan(manifest, catalog, template_dir)?;
+    let lockfiles = plan
+        .operations
+        .iter()
+        .filter(|operation| operation.path.ends_with("versions.lock"))
+        .collect::<Vec<_>>();
+    let stale_lockfiles = lockfiles
+        .iter()
+        .filter(|operation| operation.action != BatchAction::Skip)
+        .count();
+
+    push_check(
+        checks,
+        "lockfiles-present",
+        !lockfiles.is_empty()
+            && lockfiles.iter().all(|operation| {
+                operation.path.exists() || operation.action != BatchAction::Create
+            }),
+        "agent lockfiles are present",
+        "one or more agent lockfiles are missing",
+    );
+    push_check(
+        checks,
+        "lockfiles-current",
+        stale_lockfiles == 0,
+        "agent lockfiles match rendered component versions",
+        &format!("{stale_lockfiles} lockfile(s) are stale"),
+    );
+
+    Ok(())
+}
+
+fn generated_metadata_present(plan: &BatchPlan) -> bool {
+    plan.operations.iter().all(|operation| {
+        operation
+            .content
+            .starts_with("# Generated by eve-rails. Do not edit generated regions.")
+            || operation
+                .content
+                .starts_with("// Generated by eve-rails. Do not edit generated regions.")
+    })
+}
+
+fn push_check(
+    checks: &mut Vec<DoctorCheck>,
+    name: &str,
+    passed: bool,
+    pass_message: &str,
+    fail_message: &str,
+) {
+    checks.push(DoctorCheck {
+        name: name.to_string(),
+        status: if passed {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Fail
+        },
+        message: if passed {
+            pass_message.to_string()
+        } else {
+            fail_message.to_string()
+        },
+    });
+}
+
+fn print_doctor_report(report: &DoctorReport) {
+    println!();
+    for check in &report.checks {
+        println!(
+            "[{}] {} - {}",
+            doctor_status_label(check.status),
+            check.name,
+            check.message
+        );
+    }
+}
+
+fn doctor_status_label(status: DoctorStatus) -> &'static str {
+    match status {
+        DoctorStatus::Pass => "pass",
+        DoctorStatus::Warn => "warn",
+        DoctorStatus::Fail => "fail",
+    }
+}
+
 fn validate_manifest(manifest: &FleetManifest, catalog: &CatalogManifest) -> ValidationReport {
     let mut report = ValidationReport::default();
 
@@ -2209,6 +2448,93 @@ channels:
 
         assert_eq!(manifest.agents.len(), 10);
         assert_eq!(plan.operations.len(), 40);
+    }
+
+    #[test]
+    fn doctor_reports_risky_tool_failure() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].approvals.clear();
+        let report =
+            run_doctor(&manifest, &valid_catalog(), &doctor_command(false, false)).expect("doctor");
+
+        assert!(report.has_failures());
+        assert!(report.checks.iter().any(|check| {
+            check.name == "approval-coverage" && check.status == DoctorStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn doctor_templates_fail_when_generated_files_are_missing() {
+        let manifest = manifest(
+            r#"
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+  channels: [web]
+  evals: [standard]
+agents:
+  - name: doctor_missing_agent
+    version: 1.0.0
+    responsibility: Exercise template doctor checks.
+    tools:
+      search_customers: 1.0.0
+    skills:
+      handle_refund: 1.0.0
+    memory:
+      customer_profile: 1.0.0
+"#,
+        );
+        let report =
+            run_doctor(&manifest, &valid_catalog(), &doctor_command(true, false)).expect("doctor");
+
+        assert!(report.has_failures());
+        assert!(report.checks.iter().any(|check| {
+            check.name == "generated-output-fresh" && check.status == DoctorStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn doctor_updates_fail_when_lockfiles_are_missing() {
+        let manifest = manifest(
+            r#"
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+  channels: [web]
+  evals: [standard]
+agents:
+  - name: doctor_missing_lockfile
+    version: 1.0.0
+    responsibility: Exercise update doctor checks.
+    tools:
+      search_customers: 1.0.0
+    skills:
+      handle_refund: 1.0.0
+    memory:
+      customer_profile: 1.0.0
+"#,
+        );
+        let report =
+            run_doctor(&manifest, &valid_catalog(), &doctor_command(false, true)).expect("doctor");
+
+        assert!(report.has_failures());
+        assert!(
+            report.checks.iter().any(
+                |check| check.name == "lockfiles-present" && check.status == DoctorStatus::Fail
+            )
+        );
+    }
+
+    fn doctor_command(templates: bool, updates: bool) -> DoctorCommand {
+        DoctorCommand {
+            all: true,
+            updates,
+            templates,
+            json: false,
+            manifest: PathBuf::from("manifests/agents.yml"),
+            catalog: PathBuf::from("manifests/catalog.yml"),
+            template_dir: PathBuf::from("templates/agent"),
+        }
     }
 
     #[test]
