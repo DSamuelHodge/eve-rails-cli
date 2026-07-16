@@ -163,11 +163,50 @@ memory:
 channels:
   eve:
     version: 1.0.0
+  sms_support:
+    version: 1.0.0
+    kind: twilio
+    allow_from: env:TWILIO_ALLOWED_FROM
+    messaging_from: env:TWILIO_FROM_NUMBER
+  slack_support:
+    version: 1.0.0
+    kind: slack
+    connect_uid: slack/support-agent
 schedules:
   weekday_triage:
     version: 1.0.0
     schedule: "0 9 * * 1-5"
 ```
+
+## Platform Channels
+
+Eve Rails CLI can generate common Eve platform channel files from catalog metadata. Agents reference the channel names, and render writes the matching `agent/channels/*.ts` files.
+
+```yaml
+agents:
+  - name: support
+    channels: [sms_support, slack_support, discord_support, telegram_support]
+
+channels:
+  sms_support:
+    version: 1.0.0
+    kind: twilio
+    allow_from: env:TWILIO_ALLOWED_FROM
+    messaging_from: env:TWILIO_FROM_NUMBER
+  slack_support:
+    version: 1.0.0
+    kind: slack
+    connect_uid: slack/support-agent
+  discord_support:
+    version: 1.0.0
+    kind: discord
+  telegram_support:
+    version: 1.0.0
+    kind: telegram
+    bot_username: support_bot
+```
+
+`doctor --env production` checks required channel configuration and runtime env vars, such as Twilio, Discord, Telegram, Teams, or Connect-backed channel settings.
 
 ## Commands
 
@@ -177,6 +216,8 @@ Step 1. Project setup and generation:
 eve-rails-cli init my-fleet --template basic --dry-run
 eve-rails-cli generate agent support --dry-run
 eve-rails-cli generate tool search_customers --side-effects read
+eve-rails-cli generate channel sms_support --kind twilio --allow-from env:TWILIO_ALLOWED_FROM --messaging-from env:TWILIO_FROM_NUMBER
+eve-rails-cli generate channel slack_support --kind slack --connect-uid slack/support-agent
 eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
 eve-rails-cli generate batch manifests/agents.yml --dry-run
 ```

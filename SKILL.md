@@ -140,6 +140,8 @@ memory:
 channels:
   slack:
     version: 1.0.0
+    kind: slack
+    connect_uid: slack/support-agent
 schedules:
   weekday_triage:
     version: 1.0.0
@@ -176,7 +178,8 @@ eve-rails-cli generate agent support --with-tools refund_customer --approval req
 eve-rails-cli generate tool refund_customer --side-effects money
 eve-rails-cli generate skill handle_refund
 eve-rails-cli generate subagent researcher
-eve-rails-cli generate channel slack
+eve-rails-cli generate channel slack --kind slack --connect-uid slack/support-agent
+eve-rails-cli generate channel sms_support --kind twilio --allow-from env:TWILIO_ALLOWED_FROM --messaging-from env:TWILIO_FROM_NUMBER
 eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
 eve-rails-cli generate approval required
 eve-rails-cli generate eval refund_policy

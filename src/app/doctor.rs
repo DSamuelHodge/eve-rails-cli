@@ -107,6 +107,7 @@ pub(super) fn run_doctor(
         add_budget_checks(&mut checks, manifest);
     }
     add_schedule_safety_checks(&mut checks, manifest, catalog);
+    add_channel_config_checks(&mut checks, manifest, catalog, command.env.is_some());
     if command.env.is_some() || command.connections {
         add_environment_checks(&mut checks, command)?;
     }
@@ -205,6 +206,127 @@ pub(super) fn add_schedule_safety_checks(
             missing.join(",")
         ),
     );
+}
+
+pub(super) fn add_channel_config_checks(
+    checks: &mut Vec<DoctorCheck>,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    check_env: bool,
+) {
+    let mut missing_config = Vec::new();
+    let mut missing_env = Vec::new();
+
+    for agent in &manifest.agents {
+        for channel in effective_string_list(&manifest.defaults.channels, &agent.channels) {
+            let Some(component) = catalog.channels.get(&channel) else {
+                continue;
+            };
+            let kind = component.kind.as_deref().unwrap_or(&channel);
+            match kind {
+                "twilio" => {
+                    if component.allow_from.as_deref().is_none_or(str::is_empty) {
+                        missing_config.push(format!("{}:{channel}:allow_from", agent.name));
+                    }
+                    if check_env {
+                        push_missing_env(
+                            &mut missing_env,
+                            component.messaging_from.as_deref(),
+                            "TWILIO_FROM_NUMBER",
+                        );
+                        push_env_if_missing(&mut missing_env, "TWILIO_ACCOUNT_SID");
+                        push_env_if_missing(&mut missing_env, "TWILIO_AUTH_TOKEN");
+                    }
+                }
+                "slack" => {
+                    if component.connect_uid.as_deref().is_none_or(str::is_empty) {
+                        missing_config.push(format!("{}:{channel}:connect_uid", agent.name));
+                    }
+                }
+                "linear" => {
+                    if component.connect_uid.as_deref().is_none_or(str::is_empty) {
+                        missing_config.push(format!("{}:{channel}:connect_uid", agent.name));
+                    }
+                    if component.connect_uid.as_deref().is_none_or(str::is_empty) && check_env {
+                        push_env_if_missing(&mut missing_env, "LINEAR_AGENT_ACCESS_TOKEN");
+                        push_env_if_missing(&mut missing_env, "LINEAR_WEBHOOK_SECRET");
+                    }
+                }
+                "github" => {
+                    if component.connect_uid.as_deref().is_none_or(str::is_empty) {
+                        missing_config.push(format!("{}:{channel}:connect_uid", agent.name));
+                    }
+                    if component.connect_uid.as_deref().is_none_or(str::is_empty) && check_env {
+                        push_env_if_missing(&mut missing_env, "GITHUB_APP_ID");
+                        push_env_if_missing(&mut missing_env, "GITHUB_APP_PRIVATE_KEY");
+                        push_env_if_missing(&mut missing_env, "GITHUB_WEBHOOK_SECRET");
+                    }
+                }
+                "discord" => {
+                    if check_env {
+                        push_env_if_missing(&mut missing_env, "DISCORD_PUBLIC_KEY");
+                        push_env_if_missing(&mut missing_env, "DISCORD_APPLICATION_ID");
+                        push_env_if_missing(&mut missing_env, "DISCORD_BOT_TOKEN");
+                    }
+                }
+                "telegram" => {
+                    if component.bot_username.as_deref().is_none_or(str::is_empty) {
+                        missing_config.push(format!("{}:{channel}:bot_username", agent.name));
+                    }
+                    if check_env {
+                        push_env_if_missing(&mut missing_env, "TELEGRAM_BOT_TOKEN");
+                        push_env_if_missing(&mut missing_env, "TELEGRAM_WEBHOOK_SECRET_TOKEN");
+                    }
+                }
+                "teams" => {
+                    if check_env {
+                        push_env_if_missing(&mut missing_env, "MICROSOFT_APP_ID");
+                        push_env_if_missing(&mut missing_env, "MICROSOFT_APP_PASSWORD");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    missing_env.sort();
+    missing_env.dedup();
+
+    push_check(
+        checks,
+        "channel-config",
+        missing_config.is_empty(),
+        "channel metadata is complete",
+        &format!("channel metadata is missing: {}", missing_config.join(",")),
+    );
+    if check_env {
+        push_check(
+            checks,
+            "channel-env",
+            missing_env.is_empty(),
+            "channel runtime env vars are present",
+            &format!(
+                "channel runtime env vars are missing: {}",
+                missing_env.join(",")
+            ),
+        );
+    }
+}
+
+fn push_missing_env(missing: &mut Vec<String>, configured: Option<&str>, fallback: &str) {
+    match configured.and_then(|value| value.strip_prefix("env:")) {
+        Some(env_name) => push_env_if_missing(missing, env_name.trim()),
+        None => push_env_if_missing(missing, fallback),
+    }
+}
+
+fn push_env_if_missing(missing: &mut Vec<String>, env_name: &str) {
+    if env_name.is_empty() {
+        return;
+    }
+    if env::var_os(env_name).is_none() {
+        missing.push(env_name.to_string());
+    }
 }
 
 pub(super) fn add_environment_checks(
@@ -741,6 +863,16 @@ pub(super) fn effective_schedules(agent: &AgentManifest, manifest: &FleetManifes
         }
     }
     schedules
+}
+
+pub(super) fn effective_string_list(defaults: &[String], agent_values: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    for value in defaults.iter().chain(agent_values.iter()) {
+        if !values.contains(value) {
+            values.push(value.clone());
+        }
+    }
+    values
 }
 
 pub(super) fn is_risky_tool(tool: &str, catalog: &CatalogManifest) -> bool {

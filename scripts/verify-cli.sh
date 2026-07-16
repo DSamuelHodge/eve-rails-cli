@@ -27,11 +27,15 @@ trap 'rm -rf "$TMP"' EXIT
 "$BIN" init "$TMP/demo" --template basic --model openai/gpt-5.5 --owner cli-test --yes >/dev/null
 (
   cd "$TMP/demo"
+  export TWILIO_ACCOUNT_SID=AC00000000000000000000000000000000
+  export TWILIO_AUTH_TOKEN=test-token
+  export TWILIO_FROM_NUMBER=+15557654321
   "$BIN" generate tool refund_customer --side-effects money --dry-run --json >/dev/null
   "$BIN" generate tool refund_customer --side-effects money --json >/dev/null
   "$BIN" generate skill handle_refund --json >/dev/null
   "$BIN" generate subagent researcher --json >/dev/null
-  "$BIN" generate channel slack --json >/dev/null
+  "$BIN" generate channel slack --kind slack --connect-uid slack/support-agent --json >/dev/null
+  "$BIN" generate channel sms_support --kind twilio --allow-from "+15551234567" --messaging-from env:TWILIO_FROM_NUMBER --json >/dev/null
   "$BIN" generate schedule weekday_triage --schedule "0 9 * * 1-5" --json >/dev/null
   "$BIN" generate approval refund_customer --json >/dev/null
   "$BIN" generate eval refund_policy --json >/dev/null
@@ -44,7 +48,7 @@ trap 'rm -rf "$TMP"' EXIT
     --with-tools refund_customer \
     --with-skills handle_refund \
     --with-subagents researcher \
-    --with-channels slack \
+    --with-channels slack,sms_support \
     --with-schedules weekday_triage \
     --with-evals refund_policy \
     --with-memory customer_profile \

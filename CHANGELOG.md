@@ -6,6 +6,11 @@ This project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Platform channel generation metadata for Eve channels including Twilio, Slack, Discord, Telegram, Linear, GitHub, and Teams.
+- Doctor checks for platform channel configuration and production channel environment variables.
+
 ## [1.1.0] - 2026-07-16
 
 ### Added

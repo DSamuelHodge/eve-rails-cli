@@ -293,6 +293,30 @@ struct GenerateNamed {
     #[arg(long)]
     schedule: Option<String>,
 
+    /// Channel kind for generated channel components, such as eve, slack, discord, telegram, or twilio.
+    #[arg(long)]
+    kind: Option<String>,
+
+    /// Allowed inbound Twilio sender, list, or env reference for generated Twilio channels.
+    #[arg(long)]
+    allow_from: Option<String>,
+
+    /// Outbound Twilio sender number or env reference for generated Twilio channels.
+    #[arg(long)]
+    messaging_from: Option<String>,
+
+    /// Vercel Connect UID for generated Slack, Linear, or GitHub channels.
+    #[arg(long)]
+    connect_uid: Option<String>,
+
+    /// Telegram bot username for generated Telegram channels.
+    #[arg(long)]
+    bot_username: Option<String>,
+
+    /// Bot name for generated GitHub channels.
+    #[arg(long)]
+    bot_name: Option<String>,
+
     /// Risk classification.
     #[arg(long)]
     risk: Option<String>,
@@ -733,9 +757,15 @@ struct CatalogManifest {
 #[derive(Debug, Default, Deserialize)]
 struct CatalogComponent {
     version: String,
+    kind: Option<String>,
     side_effects: Option<SideEffects>,
     retention: Option<String>,
     schedule: Option<String>,
+    allow_from: Option<String>,
+    messaging_from: Option<String>,
+    connect_uid: Option<String>,
+    bot_username: Option<String>,
+    bot_name: Option<String>,
     owner: Option<String>,
     auth: Option<String>,
     visibility: Option<String>,
@@ -2460,9 +2490,38 @@ fn catalog_entry(kind: GeneratorKind, command: &GenerateNamed) -> String {
                 command.schedule.as_deref().unwrap_or("0 9 * * 1-5")
             ));
         }
+        GeneratorKind::Channel => {
+            entry.push_str(&format!(
+                "    kind: {}\n",
+                command.kind.as_deref().unwrap_or(&command.name)
+            ));
+            append_catalog_optional_string(&mut entry, "allow_from", command.allow_from.as_deref());
+            append_catalog_optional_string(
+                &mut entry,
+                "messaging_from",
+                command.messaging_from.as_deref(),
+            );
+            append_catalog_optional_string(
+                &mut entry,
+                "connect_uid",
+                command.connect_uid.as_deref(),
+            );
+            append_catalog_optional_string(
+                &mut entry,
+                "bot_username",
+                command.bot_username.as_deref(),
+            );
+            append_catalog_optional_string(&mut entry, "bot_name", command.bot_name.as_deref());
+        }
         _ => {}
     }
     entry
+}
+
+fn append_catalog_optional_string(output: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        output.push_str(&format!("    {label}: {value:?}\n"));
+    }
 }
 
 fn component_stub(kind: GeneratorKind, command: &GenerateNamed) -> Result<Option<PlannedChange>> {
@@ -3254,6 +3313,169 @@ channels:
     }
 
     #[test]
+    fn renderer_outputs_platform_channel_files() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let mut manifest = valid_manifest();
+        manifest.agents[0].channels = vec!["sms_support".to_string(), "slack_support".to_string()];
+        let catalog = catalog(
+            r#"
+tools:
+  search_customers:
+    version: 1.0.0
+    side_effects: read
+  prepare_refund:
+    version: 1.0.0
+    side_effects: money
+skills:
+  handle_refund:
+    version: 1.0.0
+evals:
+  standard:
+    version: 1.0.0
+approvals:
+  required:
+    version: 1.0.0
+memory:
+  customer_profile:
+    version: 1.0.0
+    retention: 180d
+channels:
+  web:
+    version: 1.0.0
+  sms_support:
+    version: 1.0.0
+    kind: twilio
+    allow_from: "+15551234567"
+    messaging_from: env:TWILIO_FROM_NUMBER
+  slack_support:
+    version: 1.0.0
+    kind: slack
+    connect_uid: slack/support-agent
+schedules:
+  weekday_triage:
+    version: 1.0.0
+    schedule: "0 9 * * 1-5"
+"#,
+        );
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &catalog)
+            .expect("agent renders");
+
+        assert!(files.iter().any(|file| {
+            file.path.ends_with("channels/sms_support.ts")
+                && file.content.contains("twilioChannel")
+                && file.content.contains("process.env.TWILIO_FROM_NUMBER!")
+        }));
+        assert!(files.iter().any(|file| {
+            file.path.ends_with("channels/slack_support.ts")
+                && file
+                    .content
+                    .contains("connectSlackCredentials(\"slack/support-agent\")")
+        }));
+    }
+
+    #[test]
+    fn doctor_reports_missing_channel_config() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].channels = vec!["sms_support".to_string()];
+        let catalog = catalog(
+            r#"
+tools:
+  search_customers:
+    version: 1.0.0
+    side_effects: read
+  prepare_refund:
+    version: 1.0.0
+    side_effects: money
+skills:
+  handle_refund:
+    version: 1.0.0
+evals:
+  standard:
+    version: 1.0.0
+approvals:
+  required:
+    version: 1.0.0
+memory:
+  customer_profile:
+    version: 1.0.0
+    retention: 180d
+channels:
+  web:
+    version: 1.0.0
+  sms_support:
+    version: 1.0.0
+    kind: twilio
+schedules:
+  weekday_triage:
+    version: 1.0.0
+    schedule: "0 9 * * 1-5"
+"#,
+        );
+
+        let report =
+            run_doctor(&manifest, &catalog, &doctor_command(false, false)).expect("doctor");
+
+        assert!(report.has_failures());
+        assert!(
+            report.checks.iter().any(|check| {
+                check.name == "channel-config" && check.status == DoctorStatus::Fail
+            })
+        );
+    }
+
+    #[test]
+    fn doctor_requires_connect_uid_for_connect_channels() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].channels = vec!["github_support".to_string()];
+        let catalog = catalog(
+            r#"
+tools:
+  search_customers:
+    version: 1.0.0
+    side_effects: read
+  prepare_refund:
+    version: 1.0.0
+    side_effects: money
+skills:
+  handle_refund:
+    version: 1.0.0
+evals:
+  standard:
+    version: 1.0.0
+approvals:
+  required:
+    version: 1.0.0
+memory:
+  customer_profile:
+    version: 1.0.0
+    retention: 180d
+channels:
+  web:
+    version: 1.0.0
+  github_support:
+    version: 1.0.0
+    kind: github
+    bot_name: support-agent
+schedules:
+  weekday_triage:
+    version: 1.0.0
+    schedule: "0 9 * * 1-5"
+"#,
+        );
+
+        let report =
+            run_doctor(&manifest, &catalog, &doctor_command(false, false)).expect("doctor");
+
+        assert!(report.has_failures());
+        assert!(report.checks.iter().any(|check| {
+            check.name == "channel-config"
+                && check.status == DoctorStatus::Fail
+                && check.message.contains("github_support:connect_uid")
+        }));
+    }
+
+    #[test]
     fn renderer_fails_on_undefined_template_variables() {
         let dir = temp_dir("undefined-template");
         fs::create_dir_all(&dir).expect("temp dir");
@@ -3553,6 +3775,12 @@ agents:
             with_schedules: Vec::new(),
             approval: None,
             schedule: None,
+            kind: None,
+            allow_from: None,
+            messaging_from: None,
+            connect_uid: None,
+            bot_username: None,
+            bot_name: None,
             risk: None,
             auth: None,
             visibility: None,
