@@ -13,7 +13,7 @@
 
 [Eve](https://github.com/vercel/eve) is Vercel's filesystem-first framework for durable AI agents. Eve agents keep runtime capabilities in conventional folders like `agent/instructions.md`, `agent/tools/`, `agent/skills/`, `agent/channels/`, and `agent/schedules/`.
 
-Eve Rails CLI adds a convention layer for teams building more than one agent. "Rails" here means convention over configuration: put fleet intent in YAML, reuse catalog components, render Eve-compatible agents, and run safety checks before deploys.
+**Eve Rails CLI adds a convention layer for teams building more than one agent. "Rails" here means convention over configuration: put fleet intent in YAML, reuse catalog components, render Eve-compatible agents, and run safety checks before deploys.**
 
 ## Why It Matters
 
