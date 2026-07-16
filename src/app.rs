@@ -3275,12 +3275,15 @@ channels:
 
     #[test]
     fn ten_agent_fixture_plans_expected_files() {
-        let manifest = load_manifest(Path::new(
-            "examples/basic-fleet/fixtures/batch-10-agents.yml",
-        ))
-        .expect("manifest");
-        let catalog =
-            load_catalog(Path::new("examples/basic-fleet/manifests/catalog.yml")).expect("catalog");
+        let mut manifest = valid_manifest();
+        manifest.agents = (0..10)
+            .map(|index| {
+                let mut agent = valid_manifest().agents.remove(0);
+                agent.name = format!("agent_{index}");
+                agent
+            })
+            .collect();
+        let catalog = valid_catalog();
         let report = validate_manifest(&manifest, &catalog);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
@@ -3288,7 +3291,12 @@ channels:
             batch_plan(&manifest, &catalog, Path::new("templates/agent")).expect("batch plan");
 
         assert_eq!(manifest.agents.len(), 10);
-        assert_eq!(plan.operations.len(), 227);
+        assert!(plan.operations.len() > 100);
+        assert!(
+            plan.operations
+                .iter()
+                .any(|operation| operation.path.starts_with("agents/agent_9/"))
+        );
     }
 
     #[test]

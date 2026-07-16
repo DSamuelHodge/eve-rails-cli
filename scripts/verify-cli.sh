@@ -19,39 +19,7 @@ for sub in agent tool skill subagent channel schedule approval eval memory batch
   "$BIN" generate "$sub" --help >/dev/null
 done
 
-echo "== example fleet read-only and dry-run commands =="
-(
-  cd "$ROOT/examples/basic-fleet"
-  "$BIN" plan manifests/agents.yml --catalog manifests/catalog.yml --templates ../../templates/agent --json >/dev/null
-  "$BIN" render --all --check --templates ../../templates/agent >/dev/null
-  "$BIN" doctor --all --templates --updates --env production --connections --budgets \
-    --manifest manifests/agents.yml \
-    --catalog manifests/catalog.yml \
-    --template-dir ../../templates/agent \
-    --environments manifests/environments.yml >/dev/null
-  "$BIN" doctor --all --templates --updates --fix \
-    --manifest manifests/agents.yml \
-    --catalog manifests/catalog.yml \
-    --template-dir ../../templates/agent \
-    --environments manifests/environments.yml >/dev/null
-  "$BIN" outdated manifests/agents.yml --catalog manifests/catalog.yml --templates ../../templates/agent --json >/dev/null
-  "$BIN" update --agent support --minor --plan --manifest manifests/agents.yml --catalog manifests/catalog.yml --json >/dev/null
-  "$BIN" hotload --agent support --current 1.0.0 skill:summarize_thread@1.0.1 --json >/dev/null
-  "$BIN" deploy --agent support --env production --require-evals --require-doctor --require-approvals --dry-run \
-    --manifest manifests/agents.yml \
-    --catalog manifests/catalog.yml \
-    --template-dir ../../templates/agent \
-    --json >/dev/null
-  "$BIN" eval --agent support --dry-run --manifest manifests/agents.yml --catalog manifests/catalog.yml --json >/dev/null
-  "$BIN" test --agent support --dry-run --manifest manifests/agents.yml --catalog manifests/catalog.yml --json >/dev/null
-  "$BIN" preview --agent support --dry-run --manifest manifests/agents.yml --catalog manifests/catalog.yml --json >/dev/null
-  "$BIN" migrate --agent support --env production --dry-run --manifest manifests/agents.yml --json >/dev/null
-  "$BIN" rollback --agent support --to 1.0.0 --manifest manifests/agents.yml --catalog manifests/catalog.yml --template-dir ../../templates/agent --json >/dev/null
-  "$BIN" inspect --agent support --manifest manifests/agents.yml --catalog manifests/catalog.yml --template-dir ../../templates/agent --json >/dev/null
-  "$BIN" graph --all --format json --manifest manifests/agents.yml --catalog manifests/catalog.yml --template-dir ../../templates/agent >/dev/null
-)
-
-echo "== temp project write commands =="
+echo "== temp project commands =="
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -90,7 +58,19 @@ trap 'rm -rf "$TMP"' EXIT
   "$BIN" plan manifests/agents.yml --json >/dev/null
   "$BIN" apply manifests/agents.yml --json >/dev/null
   "$BIN" render --all --check >/dev/null
-  "$BIN" doctor --all --templates --updates --budgets >/dev/null
+  "$BIN" doctor --all --templates --updates --env production --connections --budgets >/dev/null
+  "$BIN" doctor --all --templates --updates --fix >/dev/null
+  "$BIN" outdated manifests/agents.yml --json >/dev/null
+  "$BIN" update --agent support --minor --plan --json >/dev/null
+  "$BIN" hotload --agent support --current 1.0.0 skill:handle_refund@1.0.1 --json >/dev/null
+  "$BIN" deploy --agent support --env production --require-evals --require-doctor --require-approvals --dry-run --json >/dev/null
+  "$BIN" eval --agent support --dry-run --json >/dev/null
+  "$BIN" test --agent support --dry-run --json >/dev/null
+  "$BIN" preview --agent support --dry-run --json >/dev/null
+  "$BIN" migrate --agent support --env production --dry-run --json >/dev/null
+  "$BIN" rollback --agent support --to 1.0.0 --json >/dev/null
+  "$BIN" inspect --agent support --json >/dev/null
+  "$BIN" graph --all --format json >/dev/null
 )
 
 echo "CLI acceptance sweep passed."

@@ -32,26 +32,60 @@ jobs:
       - name: CLI acceptance
         run: bash scripts/verify-cli.sh
 
-  eve-example:
-    name: Eve Example
+  eve-smoke:
+    name: Eve Smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "24"
 
-      - name: Install dependencies
-        working-directory: examples/basic-fleet/agents/support
-        run: npm install
+      - name: Build CLI
+        run: cargo build --locked --bin eve-rails-cli
+
+      - name: Generate smoke agent
+        run: |
+          set -euo pipefail
+          BIN="$PWD/target/debug/eve-rails-cli"
+          TMP="$(mktemp -d)"
+          echo "EVE_RAILS_SMOKE=$TMP/demo" >> "$GITHUB_ENV"
+          "$BIN" init "$TMP/demo" --template basic --model openai/gpt-5.5 --owner ci --yes
+          cd "$TMP/demo"
+          "$BIN" generate tool search_customers --side-effects read
+          "$BIN" generate skill triage_customer_issue
+          "$BIN" generate channel eve
+          "$BIN" generate schedule weekday_triage --schedule "0 9 * * 1-5"
+          "$BIN" generate eval standard
+          "$BIN" generate memory customer_profile --retention 180d
+          "$BIN" generate agent support \
+            --owner ci \
+            --model openai/gpt-5.5 \
+            --description "Generated CI smoke agent." \
+            --with-tools search_customers \
+            --with-skills triage_customer_issue \
+            --with-channels eve \
+            --with-schedules weekday_triage \
+            --with-evals standard \
+            --with-memory customer_profile \
+            --approval required \
+            --auth platform-oauth \
+            --visibility internal
+          "$BIN" apply manifests/agents.yml
+          "$BIN" render --all --check
 
       - name: Typecheck
-        working-directory: examples/basic-fleet/agents/support
-        run: npm run typecheck
+        working-directory: ${{ env.EVE_RAILS_SMOKE }}/agents/support
+        run: |
+          npm install
+          npm run typecheck
 
       - name: Eve info
-        working-directory: examples/basic-fleet/agents/support
+        working-directory: ${{ env.EVE_RAILS_SMOKE }}/agents/support
         run: npm exec -- eve info --json

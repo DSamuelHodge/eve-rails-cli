@@ -16,6 +16,7 @@
 
 # Local maintainer-only agent guidance and internal planning docs
 .agents/
+examples/
 SPEC.md
 RAILS_PHILOSOPHY_FOR_EVE.md
 
@@ -25,8 +26,3 @@ agents/*/.eve/
 agents/*/.output/
 agents/*/.vercel/
 agents/*/package-lock.json
-examples/*/agents/*/node_modules/
-examples/*/agents/*/.eve/
-examples/*/agents/*/.output/
-examples/*/agents/*/.vercel/
-examples/*/agents/*/package-lock.json

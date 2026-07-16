@@ -10,10 +10,20 @@ cd eve-rails-cli
 cargo test
 ```
 
-For Eve integration checks, install Node.js 24 or newer and run commands from an example agent:
+For Eve integration checks, install Node.js 24 or newer and generate a disposable agent:
 
 ```sh
-cd examples/basic-fleet/agents/support
+eve-rails-cli init /tmp/eve-rails-smoke --template basic --model openai/gpt-5.5 --owner ci --yes
+cd /tmp/eve-rails-smoke
+eve-rails-cli generate tool search_customers --side-effects read
+eve-rails-cli generate skill triage_customer_issue
+eve-rails-cli generate channel eve
+eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
+eve-rails-cli generate eval standard
+eve-rails-cli generate memory customer_profile --retention 180d
+eve-rails-cli generate agent support --with-tools search_customers --with-skills triage_customer_issue --with-channels eve --with-schedules weekday_triage --with-evals standard --with-memory customer_profile --approval required --auth platform-oauth --visibility internal
+eve-rails-cli apply manifests/agents.yml
+cd agents/support
 npm install
 npm run typecheck
 npm exec -- eve info --json
@@ -37,7 +47,7 @@ Before opening a PR:
 
 - Run `cargo fmt --check`.
 - Run `cargo test`.
-- Update README, SPEC, examples, or changelog when behavior changes.
+- Update README, changelog, or public skill guidance when behavior changes.
 - Add or update tests for CLI behavior.
 - Keep generated/runtime artifacts out of commits.
 
