@@ -1073,9 +1073,15 @@ fn init_changes(command: &InitCommand, root: &Path) -> Vec<PlannedChange> {
             "instructions.md.j2",
             include_str!("../templates/agent/instructions.md.j2"),
         ),
-        ("agent.ts.j2", include_str!("../templates/agent/agent.ts.j2")),
+        (
+            "agent.ts.j2",
+            include_str!("../templates/agent/agent.ts.j2"),
+        ),
         ("tool.ts.j2", include_str!("../templates/agent/tool.ts.j2")),
-        ("skill.md.j2", include_str!("../templates/agent/skill.md.j2")),
+        (
+            "skill.md.j2",
+            include_str!("../templates/agent/skill.md.j2"),
+        ),
         (
             "schedule.ts.j2",
             include_str!("../templates/agent/schedule.ts.j2"),
