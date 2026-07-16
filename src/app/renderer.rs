@@ -456,7 +456,8 @@ pub(super) fn render_package_json(agent_name: &str) -> String {
   "devDependencies": {{
     "@types/node": "24.x",
     "just-bash": "^3.1.0",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "vercel": "^56.2.1"
   }},
   "overrides": {{
     "ai": "^7.0.26"
