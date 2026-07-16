@@ -135,6 +135,38 @@ enum GenerateComponent {
 struct GenerateNamed {
     name: String,
 
+    /// Path to the fleet manifest.
+    #[arg(long, default_value = "manifests/agents.yml")]
+    manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
+    /// Component version.
+    #[arg(long, default_value = "1.0.0")]
+    version: String,
+
+    /// Agent owner.
+    #[arg(long)]
+    owner: Option<String>,
+
+    /// Agent model.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Agent or component responsibility/description.
+    #[arg(long)]
+    description: Option<String>,
+
+    /// Tool side-effect class.
+    #[arg(long, default_value = "read")]
+    side_effects: SideEffects,
+
+    /// Memory retention period, such as 180d.
+    #[arg(long)]
+    retention: Option<String>,
+
     /// Show planned changes without writing files.
     #[arg(long)]
     dry_run: bool,
@@ -343,7 +375,7 @@ struct CatalogComponent {
     retention: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 enum SideEffects {
     None,
@@ -352,6 +384,20 @@ enum SideEffects {
     External,
     Money,
     Production,
+}
+
+impl std::fmt::Display for SideEffects {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            SideEffects::None => "none",
+            SideEffects::Read => "read",
+            SideEffects::Write => "write",
+            SideEffects::External => "external",
+            SideEffects::Money => "money",
+            SideEffects::Production => "production",
+        };
+        formatter.write_str(value)
+    }
 }
 
 fn main() -> Result<()> {
@@ -538,15 +584,15 @@ fn doctor(command: DoctorCommand) -> Result<()> {
 fn generate(command: GenerateCommand) -> Result<()> {
     match command.component {
         GenerateComponent::Batch(command) => plan(command),
-        GenerateComponent::Agent(command) => stub_generate("agent", command),
-        GenerateComponent::Tool(command) => stub_generate("tool", command),
-        GenerateComponent::Skill(command) => stub_generate("skill", command),
-        GenerateComponent::Subagent(command) => stub_generate("subagent", command),
-        GenerateComponent::Channel(command) => stub_generate("channel", command),
-        GenerateComponent::Approval(command) => stub_generate("approval", command),
-        GenerateComponent::Eval(command) => stub_generate("eval", command),
-        GenerateComponent::Memory(command) => stub_generate("memory", command),
-        GenerateComponent::Migration(command) => stub_generate("migration", command),
+        GenerateComponent::Agent(command) => generate_named(GeneratorKind::Agent, command),
+        GenerateComponent::Tool(command) => generate_named(GeneratorKind::Tool, command),
+        GenerateComponent::Skill(command) => generate_named(GeneratorKind::Skill, command),
+        GenerateComponent::Subagent(command) => generate_named(GeneratorKind::Subagent, command),
+        GenerateComponent::Channel(command) => generate_named(GeneratorKind::Channel, command),
+        GenerateComponent::Approval(command) => generate_named(GeneratorKind::Approval, command),
+        GenerateComponent::Eval(command) => generate_named(GeneratorKind::Eval, command),
+        GenerateComponent::Memory(command) => generate_named(GeneratorKind::Memory, command),
+        GenerateComponent::Migration(command) => generate_named(GeneratorKind::Migration, command),
     }
 }
 
@@ -740,32 +786,434 @@ fn stub_manifest_command(name: &str, command: ManifestCommand) -> Result<()> {
     Ok(())
 }
 
-fn stub_generate(kind: &str, command: GenerateNamed) -> Result<()> {
+#[derive(Clone, Copy, Debug)]
+enum GeneratorKind {
+    Agent,
+    Tool,
+    Skill,
+    Subagent,
+    Channel,
+    Approval,
+    Eval,
+    Memory,
+    Migration,
+}
+
+impl GeneratorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            GeneratorKind::Agent => "agent",
+            GeneratorKind::Tool => "tool",
+            GeneratorKind::Skill => "skill",
+            GeneratorKind::Subagent => "subagent",
+            GeneratorKind::Channel => "channel",
+            GeneratorKind::Approval => "approval",
+            GeneratorKind::Eval => "eval",
+            GeneratorKind::Memory => "memory",
+            GeneratorKind::Migration => "migration",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PlannedChange {
+    path: PathBuf,
+    action: ChangeAction,
+    content: String,
+}
+
+#[derive(Debug)]
+enum ChangeAction {
+    Create,
+    Update,
+}
+
+fn generate_named(kind: GeneratorKind, command: GenerateNamed) -> Result<()> {
+    ensure_slug(&command.name)?;
+    let changes = plan_generate(kind, &command)?;
+
     if command.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "kind": kind,
+                "kind": kind.as_str(),
                 "name": command.name,
                 "dry_run": command.dry_run,
                 "force": command.force,
-                "implemented": false,
+                "changes": changes.iter().map(|change| {
+                    serde_json::json!({
+                        "path": change.path,
+                        "action": match change.action {
+                            ChangeAction::Create => "create",
+                            ChangeAction::Update => "update",
+                        },
+                    })
+                }).collect::<Vec<_>>(),
             }))?
         );
+        if command.dry_run {
+            return Ok(());
+        }
+    }
+
+    if command.dry_run {
+        print_generate_plan(kind, &command, &changes);
         return Ok(());
     }
 
-    println!(
-        "Generate {kind} '{}' ({})",
-        command.name,
-        if command.dry_run {
-            "dry run"
-        } else {
-            "write mode"
+    for change in changes {
+        if let Some(parent) = change.path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create '{}'", parent.display()))?;
         }
-    );
-    println!("Generator implementation is stubbed until PR 3.");
+        fs::write(&change.path, change.content)
+            .with_context(|| format!("failed to write '{}'", change.path.display()))?;
+        println!("{} {}", change_word(&change.action), change.path.display());
+    }
+
     Ok(())
+}
+
+fn plan_generate(kind: GeneratorKind, command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
+    match kind {
+        GeneratorKind::Agent => plan_generate_agent(command),
+        GeneratorKind::Tool
+        | GeneratorKind::Skill
+        | GeneratorKind::Channel
+        | GeneratorKind::Approval
+        | GeneratorKind::Eval
+        | GeneratorKind::Memory => plan_generate_catalog_component(kind, command),
+        GeneratorKind::Subagent => plan_generate_subagent(command),
+        GeneratorKind::Migration => plan_generate_migration(command),
+    }
+}
+
+fn plan_generate_agent(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
+    let source = read_or_default(&command.manifest, default_manifest_yaml())?;
+    if source.contains(&format!("- name: {}", command.name)) && !command.force {
+        bail!(
+            "agent '{}' already exists in '{}'; pass --force to overwrite generated manifest text",
+            command.name,
+            command.manifest.display()
+        );
+    }
+
+    let entry = format!(
+        "\n  - name: {name}\n    version: {version}\n    owner: {owner}\n    responsibility: {responsibility:?}\n    model: {model}\n    tools: {{}}\n    skills: {{}}\n    subagents: []\n    channels: []\n    approvals: {{}}\n    evals: []\n    memory: {{}}\n",
+        name = command.name,
+        version = command.version,
+        owner = command.owner.as_deref().unwrap_or("agent-platform"),
+        responsibility = command
+            .description
+            .as_deref()
+            .unwrap_or("Describe this agent's bounded responsibility."),
+        model = command.model.as_deref().unwrap_or("openai/gpt-5.5"),
+    );
+    let content = append_yaml_list_entry(source, "agents:", &entry);
+
+    Ok(vec![PlannedChange {
+        path: command.manifest.clone(),
+        action: change_action(&command.manifest),
+        content,
+    }])
+}
+
+fn plan_generate_catalog_component(
+    kind: GeneratorKind,
+    command: &GenerateNamed,
+) -> Result<Vec<PlannedChange>> {
+    let section = catalog_section(kind);
+    let source = read_or_default(&command.catalog, default_catalog_yaml())?;
+    if catalog_entry_exists(&source, section, &command.name) && !command.force {
+        bail!(
+            "{} '{}' already exists in '{}'; pass --force to overwrite generated catalog text",
+            kind.as_str(),
+            command.name,
+            command.catalog.display()
+        );
+    }
+
+    let entry = catalog_entry(kind, command);
+    let catalog_content = upsert_catalog_entry(&source, section, &command.name, &entry);
+    let mut changes = vec![PlannedChange {
+        path: command.catalog.clone(),
+        action: change_action(&command.catalog),
+        content: catalog_content,
+    }];
+
+    if let Some(stub) = component_stub(kind, command)? {
+        changes.push(stub);
+    }
+
+    Ok(changes)
+}
+
+fn plan_generate_subagent(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
+    let path = PathBuf::from("catalog")
+        .join("subagents")
+        .join(&command.name)
+        .join("instructions.md");
+    ensure_writable(&path, command.force)?;
+    Ok(vec![PlannedChange {
+        path,
+        action: ChangeAction::Create,
+        content: format!(
+            "# {}\n\n## Responsibility\n\n{}\n",
+            command.name,
+            command
+                .description
+                .as_deref()
+                .unwrap_or("Describe this subagent's bounded context.")
+        ),
+    }])
+}
+
+fn plan_generate_migration(command: &GenerateNamed) -> Result<Vec<PlannedChange>> {
+    let path = PathBuf::from("agents")
+        .join("migrations")
+        .join(format!("{}_{}.ts", "000000000000", command.name));
+    ensure_writable(&path, command.force)?;
+    Ok(vec![PlannedChange {
+        path,
+        action: ChangeAction::Create,
+        content: "export async function up() {\n  // TODO: implement migration.\n}\n\nexport async function down() {\n  // TODO: implement rollback.\n}\n".to_string(),
+    }])
+}
+
+fn catalog_section(kind: GeneratorKind) -> &'static str {
+    match kind {
+        GeneratorKind::Tool => "tools:",
+        GeneratorKind::Skill => "skills:",
+        GeneratorKind::Channel => "channels:",
+        GeneratorKind::Approval => "approvals:",
+        GeneratorKind::Eval => "evals:",
+        GeneratorKind::Memory => "memory:",
+        _ => unreachable!("kind does not live in catalog"),
+    }
+}
+
+fn catalog_entry(kind: GeneratorKind, command: &GenerateNamed) -> String {
+    let mut entry = format!("  {}:\n    version: {}\n", command.name, command.version);
+    match kind {
+        GeneratorKind::Tool => {
+            entry.push_str(&format!("    side_effects: {}\n", command.side_effects));
+        }
+        GeneratorKind::Memory => {
+            entry.push_str(&format!(
+                "    retention: {}\n",
+                command.retention.as_deref().unwrap_or("180d")
+            ));
+        }
+        _ => {}
+    }
+    entry
+}
+
+fn component_stub(kind: GeneratorKind, command: &GenerateNamed) -> Result<Option<PlannedChange>> {
+    let (dir, extension, content) = match kind {
+        GeneratorKind::Tool => (
+            "tools",
+            "ts",
+            format!(
+                "export async function {}() {{\n  throw new Error(\"{} is not implemented yet\");\n}}\n",
+                command.name, command.name
+            ),
+        ),
+        GeneratorKind::Skill => (
+            "skills",
+            "md",
+            format!(
+                "# {}\n\n## Trigger\n\nUse this skill when ...\n\n## Procedure\n\n- Gather context.\n- Use approved tools.\n- Verify the result.\n",
+                command.name
+            ),
+        ),
+        GeneratorKind::Eval => (
+            "evals",
+            "ts",
+            format!(
+                "export async function {}Eval() {{\n  throw new Error(\"{} eval is not implemented yet\");\n}}\n",
+                command.name, command.name
+            ),
+        ),
+        GeneratorKind::Approval => (
+            "approvals",
+            "ts",
+            format!(
+                "export default {{\n  name: \"{}\",\n  policy: \"required\",\n}};\n",
+                command.name
+            ),
+        ),
+        GeneratorKind::Memory => (
+            "memory",
+            "ts",
+            format!(
+                "export default {{\n  name: \"{}\",\n  version: \"{}\",\n  retention: \"{}\",\n}};\n",
+                command.name,
+                command.version,
+                command.retention.as_deref().unwrap_or("180d")
+            ),
+        ),
+        GeneratorKind::Channel => (
+            "channels",
+            "ts",
+            format!("export default {{\n  name: \"{}\",\n}};\n", command.name),
+        ),
+        _ => return Ok(None),
+    };
+    let path = PathBuf::from("catalog")
+        .join(dir)
+        .join(format!("{}.{}", command.name, extension));
+    ensure_writable(&path, command.force)?;
+    Ok(Some(PlannedChange {
+        path,
+        action: ChangeAction::Create,
+        content,
+    }))
+}
+
+fn print_generate_plan(kind: GeneratorKind, command: &GenerateNamed, changes: &[PlannedChange]) {
+    println!("Generate {} '{}' (dry run)", kind.as_str(), command.name);
+    for change in changes {
+        println!("{} {}", change_word(&change.action), change.path.display());
+    }
+}
+
+fn read_or_default(path: &Path, default: &str) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(source) => Ok(source),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default.to_string()),
+        Err(error) => Err(error).with_context(|| format!("failed to read '{}'", path.display())),
+    }
+}
+
+fn default_manifest_yaml() -> &'static str {
+    "defaults:\n  model: openai/gpt-5.5\n  owner: agent-platform\n  channels: []\n  evals: []\n\nagents:\n"
+}
+
+fn default_catalog_yaml() -> &'static str {
+    "tools:\nskills:\nevals:\napprovals:\nmemory:\nchannels:\n"
+}
+
+fn append_yaml_list_entry(source: String, section: &str, entry: &str) -> String {
+    if source.contains(section) {
+        format!("{}{}", source.trim_end(), entry)
+    } else {
+        format!("{}\n{}{}", source.trim_end(), section, entry)
+    }
+}
+
+fn upsert_catalog_entry(source: &str, section: &str, name: &str, entry: &str) -> String {
+    let without_existing = remove_catalog_entry(source, section, name);
+    insert_catalog_entry(&without_existing, section, entry)
+}
+
+fn insert_catalog_entry(source: &str, section: &str, entry: &str) -> String {
+    let mut output = Vec::new();
+    let mut inserted = false;
+    let mut in_section = false;
+
+    for line in source.lines() {
+        let is_top_level = !line.starts_with(' ') && line.ends_with(':');
+        if is_top_level && in_section && !inserted {
+            output.push(entry.trim_end().to_string());
+            inserted = true;
+        }
+        output.push(line.to_string());
+        if is_top_level {
+            in_section = line == section;
+        }
+    }
+
+    if in_section && !inserted {
+        output.push(entry.trim_end().to_string());
+        inserted = true;
+    }
+
+    if !inserted {
+        output.push(section.to_string());
+        output.push(entry.trim_end().to_string());
+    }
+
+    format!("{}\n", output.join("\n"))
+}
+
+fn remove_catalog_entry(source: &str, section: &str, name: &str) -> String {
+    let mut output = Vec::new();
+    let mut in_section = false;
+    let mut skipping = false;
+    let entry_prefix = format!("  {name}:");
+
+    for line in source.lines() {
+        let is_top_level = !line.starts_with(' ') && line.ends_with(':');
+        if is_top_level {
+            in_section = line == section;
+            skipping = false;
+        }
+        if in_section && line == entry_prefix {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if line.starts_with("    ") || line.trim().is_empty() {
+                continue;
+            }
+            skipping = false;
+        }
+        output.push(line);
+    }
+
+    format!("{}\n", output.join("\n"))
+}
+
+fn catalog_entry_exists(source: &str, section: &str, name: &str) -> bool {
+    let mut in_section = false;
+    let entry_prefix = format!("  {name}:");
+
+    for line in source.lines() {
+        let is_top_level = !line.starts_with(' ') && line.ends_with(':');
+        if is_top_level {
+            in_section = line == section;
+        }
+        if in_section && line == entry_prefix {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn ensure_slug(value: &str) -> Result<()> {
+    if is_slug(value) {
+        Ok(())
+    } else {
+        bail!("'{}' must use lowercase kebab-case or snake_case", value)
+    }
+}
+
+fn ensure_writable(path: &Path, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "'{}' already exists; pass --force to overwrite",
+            path.display()
+        )
+    } else {
+        Ok(())
+    }
+}
+
+fn change_action(path: &Path) -> ChangeAction {
+    if path.exists() {
+        ChangeAction::Update
+    } else {
+        ChangeAction::Create
+    }
+}
+
+fn change_word(action: &ChangeAction) -> &'static str {
+    match action {
+        ChangeAction::Create => "create",
+        ChangeAction::Update => "update",
+    }
 }
 
 fn load_manifest(path: &Path) -> Result<FleetManifest> {
@@ -1552,6 +2000,88 @@ channels:
 
         assert!(!file_matches(&file, "new").expect("compare"));
         assert!(file_matches(&file, "old").expect("compare"));
+    }
+
+    #[test]
+    fn generate_agent_plans_manifest_update() {
+        let dir = temp_dir("generate-agent");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let manifest_path = dir.join("agents.yml");
+        fs::write(&manifest_path, default_manifest_yaml()).expect("manifest");
+
+        let command = generate_command("support", manifest_path.clone(), dir.join("catalog.yml"));
+        let changes = plan_generate(GeneratorKind::Agent, &command).expect("plan");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, manifest_path);
+        assert!(changes[0].content.contains("- name: support"));
+        assert!(changes[0].content.contains("tools: {}"));
+    }
+
+    #[test]
+    fn generate_tool_plans_catalog_and_stub() {
+        let dir = temp_dir("generate-tool");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let catalog_path = dir.join("catalog.yml");
+        fs::write(&catalog_path, default_catalog_yaml()).expect("catalog");
+
+        let mut command = generate_command("refund_customer", dir.join("agents.yml"), catalog_path);
+        command.side_effects = SideEffects::Money;
+        let changes = plan_generate(GeneratorKind::Tool, &command).expect("plan");
+
+        assert_eq!(changes.len(), 2);
+        assert!(changes[0].content.contains("refund_customer:"));
+        assert!(changes[0].content.contains("side_effects: money"));
+        assert_eq!(
+            changes[1].path,
+            PathBuf::from("catalog/tools/refund_customer.ts")
+        );
+    }
+
+    #[test]
+    fn catalog_upsert_keeps_entry_in_requested_section() {
+        let source = "memory:\n  customer_profile:\n    version: 1.0.0\napprovals:\n  required:\n    version: 1.0.0\n";
+        let entry = "  account_context:\n    version: 1.0.0\n    retention: 90d\n";
+
+        let updated = upsert_catalog_entry(source, "memory:", "account_context", entry);
+
+        let memory_index = updated.find("  account_context:").expect("memory entry");
+        let approvals_index = updated.find("approvals:").expect("approvals section");
+        assert!(memory_index < approvals_index, "{updated}");
+    }
+
+    #[test]
+    fn generate_duplicate_requires_force() {
+        let dir = temp_dir("generate-duplicate");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let catalog_path = dir.join("catalog.yml");
+        fs::write(
+            &catalog_path,
+            "tools:\n  search_customers:\n    version: 1.0.0\n",
+        )
+        .expect("catalog");
+
+        let command = generate_command("search_customers", dir.join("agents.yml"), catalog_path);
+        let result = plan_generate(GeneratorKind::Tool, &command);
+
+        assert!(result.is_err());
+    }
+
+    fn generate_command(name: &str, manifest: PathBuf, catalog: PathBuf) -> GenerateNamed {
+        GenerateNamed {
+            name: name.to_string(),
+            manifest,
+            catalog,
+            version: "1.0.0".to_string(),
+            owner: None,
+            model: None,
+            description: None,
+            side_effects: SideEffects::Read,
+            retention: None,
+            dry_run: true,
+            force: false,
+            json: false,
+        }
     }
 
     fn temp_dir(name: &str) -> PathBuf {
