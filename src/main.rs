@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use minijinja::{Environment, context};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
 #[command(name = "eve-rails")]
@@ -51,6 +51,10 @@ struct ManifestCommand {
     /// Path to the reusable component catalog.
     #[arg(long, default_value = "manifests/catalog.yml")]
     catalog: PathBuf,
+
+    /// Path to the template directory.
+    #[arg(long, default_value = "templates/agent")]
+    templates: PathBuf,
 
     /// Emit machine-readable JSON.
     #[arg(long)]
@@ -405,7 +409,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Plan(command) => plan(command),
-        Command::Apply(command) => stub_manifest_command("apply", command),
+        Command::Apply(command) => apply(command),
         Command::Render(command) => render(command),
         Command::Doctor(command) => doctor(command),
         Command::Generate(command) => generate(command),
@@ -422,13 +426,18 @@ fn plan(command: ManifestCommand) -> Result<()> {
     let manifest = load_manifest(&command.manifest)?;
     let catalog = load_catalog(&command.catalog)?;
     let report = validate_manifest(&manifest, &catalog);
+    let batch = batch_plan(&manifest, &catalog, &command.templates)?;
 
     if command.json {
         let output = serde_json::json!({
             "manifest": command.manifest,
             "catalog": command.catalog,
+            "templates": command.templates,
             "agent_count": manifest.agents.len(),
+            "summary": batch.summary(),
+            "operations": batch.report(),
             "errors": report.errors,
+            "warnings": report.warnings,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
@@ -436,7 +445,9 @@ fn plan(command: ManifestCommand) -> Result<()> {
 
     println!("Plan for {}", command.manifest.display());
     println!("Catalog: {}", command.catalog.display());
+    println!("Templates: {}", command.templates.display());
     println!("Agents: {}", manifest.agents.len());
+    print_batch_summary(&batch);
     println!(
         "Shared: {} tools, {} skills, {} memory schemas",
         manifest.shared.tools.len(),
@@ -488,6 +499,54 @@ fn plan(command: ManifestCommand) -> Result<()> {
     }
 
     print_validation_report(&report)?;
+    Ok(())
+}
+
+fn apply(command: ManifestCommand) -> Result<()> {
+    let manifest = load_manifest(&command.manifest)?;
+    let catalog = load_catalog(&command.catalog)?;
+    let report = validate_manifest(&manifest, &catalog);
+    ensure_valid(&report)?;
+    let batch = batch_plan(&manifest, &catalog, &command.templates)?;
+
+    for operation in &batch.operations {
+        match operation.action {
+            BatchAction::Skip => {}
+            BatchAction::Create | BatchAction::Update => {
+                if let Some(parent) = operation.path.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create output directory '{}'", parent.display())
+                    })?;
+                }
+                fs::write(&operation.path, &operation.content)
+                    .with_context(|| format!("failed to write '{}'", operation.path.display()))?;
+            }
+        }
+    }
+
+    if command.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "manifest": command.manifest,
+                "catalog": command.catalog,
+                "templates": command.templates,
+                "agent_count": manifest.agents.len(),
+                "summary": batch.summary(),
+                "operations": batch.report(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("Applied {}", command.manifest.display());
+    print_batch_summary(&batch);
+    for operation in &batch.operations {
+        if operation.action != BatchAction::Skip {
+            println!("{} {}", operation.action, operation.path.display());
+        }
+    }
+
     Ok(())
 }
 
@@ -1239,6 +1298,120 @@ struct Renderer<'source> {
 struct RenderedFile {
     path: PathBuf,
     content: String,
+}
+
+#[derive(Debug)]
+struct BatchPlan {
+    operations: Vec<BatchOperation>,
+}
+
+#[derive(Debug)]
+struct BatchOperation {
+    path: PathBuf,
+    action: BatchAction,
+    content: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BatchAction {
+    Create,
+    Update,
+    Skip,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchOperationReport {
+    path: PathBuf,
+    action: BatchAction,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchSummary {
+    create: usize,
+    update: usize,
+    skip: usize,
+    total: usize,
+}
+
+impl BatchPlan {
+    fn summary(&self) -> BatchSummary {
+        let mut summary = BatchSummary {
+            create: 0,
+            update: 0,
+            skip: 0,
+            total: self.operations.len(),
+        };
+
+        for operation in &self.operations {
+            match operation.action {
+                BatchAction::Create => summary.create += 1,
+                BatchAction::Update => summary.update += 1,
+                BatchAction::Skip => summary.skip += 1,
+            }
+        }
+
+        summary
+    }
+
+    fn report(&self) -> Vec<BatchOperationReport> {
+        self.operations
+            .iter()
+            .map(|operation| BatchOperationReport {
+                path: operation.path.clone(),
+                action: operation.action,
+            })
+            .collect()
+    }
+}
+
+impl std::fmt::Display for BatchAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BatchAction::Create => formatter.write_str("create"),
+            BatchAction::Update => formatter.write_str("update"),
+            BatchAction::Skip => formatter.write_str("skip"),
+        }
+    }
+}
+
+fn batch_plan(
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    template_dir: &Path,
+) -> Result<BatchPlan> {
+    let renderer = Renderer::load(template_dir)?;
+    let mut operations = Vec::new();
+
+    for agent in &manifest.agents {
+        for rendered in renderer.render_agent(agent, manifest, catalog)? {
+            let action = batch_action(&rendered.path, &rendered.content)?;
+            operations.push(BatchOperation {
+                path: rendered.path,
+                action,
+                content: rendered.content,
+            });
+        }
+    }
+
+    Ok(BatchPlan { operations })
+}
+
+fn batch_action(path: &Path, expected: &str) -> Result<BatchAction> {
+    match fs::read_to_string(path) {
+        Ok(actual) if actual == expected => Ok(BatchAction::Skip),
+        Ok(_) => Ok(BatchAction::Update),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BatchAction::Create),
+        Err(error) => Err(error).with_context(|| format!("failed to read '{}'", path.display())),
+    }
+}
+
+fn print_batch_summary(batch: &BatchPlan) {
+    let summary = batch.summary();
+    println!(
+        "Batch: {} create, {} update, {} skip, {} total files",
+        summary.create, summary.update, summary.skip, summary.total
+    );
 }
 
 impl<'source> Renderer<'source> {
@@ -2000,6 +2173,42 @@ channels:
 
         assert!(!file_matches(&file, "new").expect("compare"));
         assert!(file_matches(&file, "old").expect("compare"));
+    }
+
+    #[test]
+    fn batch_action_classifies_create_update_and_skip() {
+        let dir = temp_dir("batch-action");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let missing = dir.join("missing.txt");
+        let existing = dir.join("existing.txt");
+        fs::write(&existing, "old").expect("write");
+
+        assert_eq!(
+            batch_action(&missing, "new").expect("create"),
+            BatchAction::Create
+        );
+        assert_eq!(
+            batch_action(&existing, "new").expect("update"),
+            BatchAction::Update
+        );
+        assert_eq!(
+            batch_action(&existing, "old").expect("skip"),
+            BatchAction::Skip
+        );
+    }
+
+    #[test]
+    fn ten_agent_fixture_plans_forty_files() {
+        let manifest = load_manifest(Path::new("fixtures/batch-10-agents.yml")).expect("manifest");
+        let catalog = load_catalog(Path::new("manifests/catalog.yml")).expect("catalog");
+        let report = validate_manifest(&manifest, &catalog);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let plan =
+            batch_plan(&manifest, &catalog, Path::new("templates/agent")).expect("batch plan");
+
+        assert_eq!(manifest.agents.len(), 10);
+        assert_eq!(plan.operations.len(), 40);
     }
 
     #[test]
