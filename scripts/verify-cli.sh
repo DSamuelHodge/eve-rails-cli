@@ -53,7 +53,8 @@ echo "== temp project write commands =="
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-"$BIN" init "$TMP/demo" --template basic --model openai/gpt-5.5 --owner cli-test --yes --json >/dev/null
+"$BIN" init "$TMP/demo-json" --template basic --model openai/gpt-5.5 --owner cli-test --yes --dry-run --json >/dev/null
+"$BIN" init "$TMP/demo" --template basic --model openai/gpt-5.5 --owner cli-test --yes >/dev/null
 (
   cd "$TMP/demo"
   "$BIN" generate tool refund_customer --side-effects money --dry-run --json >/dev/null
