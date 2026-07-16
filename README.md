@@ -171,7 +171,7 @@ schedules:
 
 ## Commands
 
-Project setup and generation:
+Step 1. Project setup and generation:
 
 ```sh
 eve-rails-cli init my-fleet --template basic --dry-run
@@ -181,7 +181,7 @@ eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
 eve-rails-cli generate batch manifests/batch.yml --dry-run
 ```
 
-Planning, rendering, and inspection:
+Step 2. Planning, rendering, and inspection:
 
 ```sh
 eve-rails-cli plan manifests/agents.yml
@@ -191,7 +191,7 @@ eve-rails-cli inspect --agent support
 eve-rails-cli graph --all --format mermaid
 ```
 
-Safety and runtime checks:
+Step 3. Safety and runtime checks:
 
 ```sh
 eve-rails-cli doctor --all --env production --connections --budgets
@@ -200,7 +200,7 @@ eve-rails-cli test --agent support
 eve-rails-cli preview --agent support --dry-run
 ```
 
-Versioning, migrations, deploys, and rollback:
+Step 4. Versioning, migrations, deploys, and rollback:
 
 ```sh
 eve-rails-cli outdated --agent support
