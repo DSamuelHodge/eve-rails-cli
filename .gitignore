@@ -19,3 +19,7 @@ agents/*/node_modules/
 agents/*/.eve/
 agents/*/.output/
 agents/*/package-lock.json
+examples/*/agents/*/node_modules/
+examples/*/agents/*/.eve/
+examples/*/agents/*/.output/
+examples/*/agents/*/package-lock.json

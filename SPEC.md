@@ -48,6 +48,9 @@ npx eve apply manifests/agents.yml
 npx eve generate batch manifests/agents.yml
 ```
 
+In this repository, runnable demo assets live under `examples/basic-fleet/`.
+The root-level `manifests/` and `agents/` paths remain the convention for a user's own project.
+
 ### Render
 
 ```sh
@@ -86,6 +89,12 @@ npx eve graph --all --format mermaid
 
 ```txt
 .
+  examples/
+    basic-fleet/
+      manifests/
+      fixtures/
+      agents/
+
   manifests/
     agents.yml
     catalog.yml
@@ -234,6 +243,7 @@ Deliverables:
 Checklist:
 
 - `plan` loads `manifests/agents.yml`.
+- Repository demo coverage loads `examples/basic-fleet/manifests/agents.yml`.
 - Invalid manifests fail with actionable errors.
 - Component references resolve against `catalog.yml`.
 - Unit tests cover required fields and missing components.

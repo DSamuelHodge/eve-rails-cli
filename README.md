@@ -49,10 +49,10 @@ Stubbed for later PRs:
 
 ```sh
 cargo test
-cargo run -- plan manifests/agents.yml
-cargo run -- doctor --all
-cargo run -- inspect --agent support
-cargo run -- graph --all --format mermaid
+cargo run -- plan examples/basic-fleet/manifests/agents.yml --catalog examples/basic-fleet/manifests/catalog.yml
+cargo run -- doctor --all --manifest examples/basic-fleet/manifests/agents.yml --catalog examples/basic-fleet/manifests/catalog.yml
+cargo run -- inspect --agent support --manifest examples/basic-fleet/manifests/agents.yml --catalog examples/basic-fleet/manifests/catalog.yml
+cargo run -- graph --all --manifest examples/basic-fleet/manifests/agents.yml --catalog examples/basic-fleet/manifests/catalog.yml --format mermaid
 npx eve@latest --help
 ```
 
