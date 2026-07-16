@@ -138,13 +138,15 @@ npx eve graph --all --format mermaid
         subagents/
         channels/
         schedules/
+        agent.manifest.yml
+        versions.lock
+        migrations/
+
+      .eve-rails/
         approvals/
         evals/
         memory/
         fixtures/
-        agent.manifest.yml
-        versions.lock
-        migrations/
 ```
 
 ## Manifest Schema
@@ -430,11 +432,11 @@ Deliverables:
 - Generated `agent/subagents/`.
 - Generated `agent/channels/`.
 - Generated `agent/schedules/`.
-- Generated `agent/approvals/`.
-- Generated `agent/evals/` contracts.
+- Generated `.eve-rails/approvals/`.
+- Generated `.eve-rails/evals/` contracts.
 - Generated top-level Eve `evals/*.eval.ts`.
-- Generated `agent/memory/`.
-- Generated `agent/fixtures/`.
+- Generated `.eve-rails/memory/`.
+- Generated `.eve-rails/fixtures/`.
 - Generated `agent/README.md`.
 
 Checklist:
@@ -534,7 +536,7 @@ Checklist:
 
 - Implemented: manifest/catalog validation, strict rendering, generators, batch plan/apply, doctor diagnostics, lockfiles, version reports, hot-load classification, migration generation/planning, deploy preflight/delegation, rollback planning, inspect, graph, schedules, init scaffolding, runtime eval/test/preview delegation.
 - Implemented as Eve-native: `agent.ts`, instructions, tools, skills, subagents, channels, schedules, top-level evals, package files, and TypeScript checks.
-- Implemented as Rails-layer conventions: approvals, memory, fixtures, and `agent/evals/` contract metadata. Eve currently ignores these folders when placed directly under `agent/`, so generated metadata is explicit that these are framework conventions until Eve consumes them.
+- Implemented as Rails-layer conventions: approvals, memory, fixtures, and eval contract metadata live under app-root `.eve-rails/` so Eve's `agent/` tree contains only supported authored slots.
 - Partial: `doctor --fix` reports safe repair plans; destructive or policy-changing fixes remain intentionally unsupported.
 - Partial: deployment delegates to Eve but does not replace Vercel release management.
 - Partial: migrations are planned and status-tracked, not executed destructively by default.

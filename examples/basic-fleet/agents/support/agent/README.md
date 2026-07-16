@@ -16,6 +16,6 @@ Resolve customer support requests.
 
 ## Generated Surfaces
 
-- Tools, skills, subagents, channels, schedules, approvals, evals, memory, and fixtures follow Eve Rails conventions.
+- Tools, skills, subagents, channels, and schedules follow Eve-native filesystem conventions.
 - Eve-native files are generated where Eve currently supports discovery.
-- Rails-layer-only folders contain metadata contracts until Eve consumes those surfaces directly.
+- Rails-layer-only approvals, eval contracts, memory contracts, and fixtures live under the app-root `.eve-rails/` folder so Eve discovery stays warning-free.

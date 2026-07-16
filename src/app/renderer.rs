@@ -156,7 +156,9 @@ impl<'source> Renderer<'source> {
         manifest: &FleetManifest,
         catalog: &CatalogManifest,
     ) -> Result<Vec<RenderedFile>> {
-        let output_root = PathBuf::from("agents").join(&agent.name).join("agent");
+        let app_root = PathBuf::from("agents").join(&agent.name);
+        let output_root = app_root.join("agent");
+        let rails_root = app_root.join(".eve-rails");
         let model = agent
             .model
             .as_deref()
@@ -323,7 +325,7 @@ impl<'source> Renderer<'source> {
                 .get_template("approval.ts.j2")?
                 .render(context! { approval => approval_context })?;
             files.push(RenderedFile {
-                path: output_root.join("approvals").join(format!("{approval}.ts")),
+                path: rails_root.join("approvals").join(format!("{approval}.ts")),
                 content: with_generated_header(
                     CommentStyle::Slash,
                     &agent.name,
@@ -354,7 +356,7 @@ impl<'source> Renderer<'source> {
                 ),
             });
             files.push(RenderedFile {
-                path: output_root
+                path: rails_root
                     .join("evals")
                     .join(format!("{eval}.contract.json")),
                 content: render_contract_json("eval", &eval, "Eve eval contract placeholder."),
@@ -376,7 +378,7 @@ impl<'source> Renderer<'source> {
                 .get_template("memory.ts.j2")?
                 .render(context! { memory => memory_context })?;
             files.push(RenderedFile {
-                path: output_root.join("memory").join(format!("{memory}.ts")),
+                path: rails_root.join("memory").join(format!("{memory}.ts")),
                 content: with_generated_header(
                     CommentStyle::Slash,
                     &agent.name,
@@ -396,7 +398,7 @@ impl<'source> Renderer<'source> {
             .get_template("fixture.json.j2")?
             .render(context! { fixture => fixture_context })?;
         files.push(RenderedFile {
-            path: output_root
+            path: rails_root
                 .join("fixtures")
                 .join(format!("{}_smoke.json", agent.name)),
             content: format!("{}\n", fixture_json.trim_end()),
@@ -495,13 +497,12 @@ pub(super) fn render_eve_channel() -> String {
 // template: eve-channel
 
 import { eveChannel } from "eve/channels/eve";
-import { localDev, placeholderAuth, vercelOidc } from "eve/channels/auth";
+import { localDev, vercelOidc } from "eve/channels/auth";
 
 export default eveChannel({
   auth: [
     vercelOidc(),
     localDev(),
-    placeholderAuth(),
   ],
 });
 "#
