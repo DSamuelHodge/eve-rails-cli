@@ -25,13 +25,14 @@ agents:
   - name: support
     version: 1.0.0
     responsibility: Resolve customer support requests.
+    auth: http-basic-env
     tools:
       search_customers: 1.0.0
       create_ticket: 1.0.0
       lookup_policy: 1.0.0
     skills:
       triage_customer_issue: 1.0.0
-      summarize_thread: 1.0.0
+      summarize_thread: 1.0.1
     subagents: [policy_checker]
     channels: [slack]
     schedules: [weekday_triage]

@@ -4,6 +4,8 @@
 
 # triage_customer_issue
 
+Version: 1.0.0
+
 ## Trigger
 
 Use this skill when the triage_customer_issue capability is relevant to the user's request.

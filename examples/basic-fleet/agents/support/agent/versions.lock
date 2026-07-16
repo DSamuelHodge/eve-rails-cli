@@ -12,9 +12,9 @@ resolved:
   catalog/tools/search_customers@1.0.0:
     source: manifests/catalog.yml
     digest: fnv64:d85744067e248b25
-  catalog/skills/summarize_thread@1.0.0:
+  catalog/skills/summarize_thread@1.0.1:
     source: manifests/catalog.yml
-    digest: fnv64:7a3373643075a084
+    digest: fnv64:7a3374643075a237
   catalog/skills/triage_customer_issue@1.0.0:
     source: manifests/catalog.yml
     digest: fnv64:9760459691a10a39

@@ -4,6 +4,8 @@
 
 # handle_refund
 
+Version: 1.0.0
+
 ## Trigger
 
 Use this skill when the handle_refund capability is relevant to the user's request.

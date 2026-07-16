@@ -16,7 +16,7 @@ skills:
   triage_customer_issue:
     version: 1.0.0
   summarize_thread:
-    version: 1.0.0
+    version: 1.0.1
   handle_refund:
     version: 1.0.0
 

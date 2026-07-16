@@ -21,7 +21,7 @@ agents:
     version: 1.0.0
     responsibility: Resolve customer support requests.
     tools: { search_customers: 1.0.0, create_ticket: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.0 }
+    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.1 }
     approvals: { create_ticket: on-risk }
     memory: { customer_profile: 1.0.0 }
 
@@ -37,7 +37,7 @@ agents:
     version: 1.0.0
     responsibility: Guide new customers through setup.
     tools: { search_customers: 1.0.0, create_ticket: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.0 }
+    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.1 }
     approvals: { create_ticket: on-risk }
     memory: { customer_profile: 1.0.0 }
 
@@ -45,7 +45,7 @@ agents:
     version: 1.0.0
     responsibility: Identify retention risks and propose save actions.
     tools: { search_customers: 1.0.0, create_ticket: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.0 }
+    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.1 }
     approvals: { create_ticket: on-risk }
     memory: { customer_profile: 1.0.0 }
 
@@ -53,21 +53,21 @@ agents:
     version: 1.0.0
     responsibility: Gather account context for operators.
     tools: { search_customers: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { summarize_thread: 1.0.0 }
+    skills: { summarize_thread: 1.0.1 }
     memory: { customer_profile: 1.0.0 }
 
   - name: quality
     version: 1.0.0
     responsibility: Review support interactions for quality signals.
     tools: { search_customers: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { summarize_thread: 1.0.0 }
+    skills: { summarize_thread: 1.0.1 }
     memory: { customer_profile: 1.0.0 }
 
   - name: escalation
     version: 1.0.0
     responsibility: Prepare escalation packets for human teams.
     tools: { search_customers: 1.0.0, create_ticket: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.0 }
+    skills: { triage_customer_issue: 1.0.0, summarize_thread: 1.0.1 }
     approvals: { create_ticket: on-risk }
     memory: { customer_profile: 1.0.0 }
 
@@ -75,19 +75,19 @@ agents:
     version: 1.0.0
     responsibility: Summarize operational trends from customer issues.
     tools: { search_customers: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { summarize_thread: 1.0.0 }
+    skills: { summarize_thread: 1.0.1 }
     memory: { customer_profile: 1.0.0 }
 
   - name: compliance
     version: 1.0.0
     responsibility: Check customer workflows against policy.
     tools: { search_customers: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { summarize_thread: 1.0.0 }
+    skills: { summarize_thread: 1.0.1 }
     memory: { customer_profile: 1.0.0 }
 
   - name: enablement
     version: 1.0.0
     responsibility: Draft enablement notes from support patterns.
     tools: { search_customers: 1.0.0, lookup_policy: 1.0.0 }
-    skills: { summarize_thread: 1.0.0 }
+    skills: { summarize_thread: 1.0.1 }
     memory: { customer_profile: 1.0.0 }

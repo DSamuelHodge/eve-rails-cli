@@ -10,7 +10,7 @@ uses:
     lookup_policy: 1.0.0
     search_customers: 1.0.0
   skills:
-    summarize_thread: 1.0.0
+    summarize_thread: 1.0.1
     triage_customer_issue: 1.0.0
   memory:
     customer_profile: 1.0.0
@@ -23,6 +23,7 @@ uses:
     - standard
     - tone
     - tool-selection
+auth: "http-basic-env"
 runtime: eve@0.24.4
 compatibility:
   hot_load: true

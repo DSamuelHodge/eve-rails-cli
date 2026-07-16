@@ -4,6 +4,8 @@
 
 # summarize_thread
 
+Version: 1.0.1
+
 ## Trigger
 
 Use this skill when the summarize_thread capability is relevant to the user's request.

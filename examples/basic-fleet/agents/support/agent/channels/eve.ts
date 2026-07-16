@@ -2,11 +2,20 @@
 // template: eve-channel
 
 import { eveChannel } from "eve/channels/eve";
-import { localDev, vercelOidc } from "eve/channels/auth";
+import { httpBasic, localDev, vercelOidc } from "eve/channels/auth";
+
+function envOrUnmatchable(name: string): string {
+  const value = process.env[name]?.trim();
+  return value && value.length > 0 ? value : `__EVE_RAILS_MISSING_${name}__`;
+}
 
 export default eveChannel({
   auth: [
     vercelOidc(),
     localDev(),
+    httpBasic({
+      username: envOrUnmatchable("EVE_RAILS_BASIC_AUTH_USERNAME"),
+      password: envOrUnmatchable("EVE_RAILS_BASIC_AUTH_PASSWORD"),
+    }),
   ],
 });

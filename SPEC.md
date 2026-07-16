@@ -164,10 +164,17 @@ agents:
     skills: {}
     subagents: []
     channels: []
+    auth: platform-oauth
     approvals: {}
     evals: []
     memory: {}
 ```
+
+Auth profile conventions:
+
+- `platform-oauth` keeps Eve's Vercel OIDC plus local development route policy.
+- `http-basic-env` adds Eve `httpBasic()` using `EVE_RAILS_BASIC_AUTH_USERNAME` and `EVE_RAILS_BASIC_AUTH_PASSWORD`, intended for staging or production smoke tests.
+- Other production auth choices should be generated as explicit profiles instead of hardcoded into the framework template.
 
 Validation rules:
 
