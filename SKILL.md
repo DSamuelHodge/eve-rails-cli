@@ -1,169 +1,230 @@
 ---
 name: eve-rails-cli
-description: Build Eve agents and agent fleets using Eve Rails CLI conventions. Use when an agent needs to understand this repository, generate Eve-compatible agents, edit manifests/templates/catalogs, run doctor/render/test/deploy workflows, or operate an Eve Rails CLI project.
+description: Build, validate, render, test, version, migrate, and deploy Eve agents and agent fleets using Eve Rails CLI conventions. Use when an agent needs to work inside an Eve Rails CLI project or create Eve-compatible agents from manifests, catalogs, templates, and generated runtime folders.
 ---
 
 # Eve Rails CLI
 
-Eve Rails CLI is a Rails-inspired convention layer for building Eve agent
-fleets. It does not replace Eve. It gives teams a repeatable workflow around
-Eve: YAML manifests, reusable catalogs, templates, generated Eve agents,
-doctor checks, version locks, update planning, migrations, deployment gates,
-and hot-load classification.
+Eve is a TypeScript framework for durable backend AI agents. An Eve agent is a
+small project with an `agent/` runtime tree, optional tools, skills, subagents,
+channels, schedules, evals, and package scripts that can be inspected or
+deployed through the Eve CLI.
 
-Use this skill when you need to build, modify, validate, test, or deploy agents
-with this repository.
+Eve Rails CLI is the convention layer around Eve. It does not replace Eve. It
+adds a Rails-like workflow so fleets of agents can be generated and operated
+predictably from source-of-truth YAML:
 
-## First Principles
+- manifests describe agents and fleet defaults
+- catalogs define reusable tools, skills, evals, channels, schedules, approvals,
+  and memory schemas
+- templates render Eve-compatible projects
+- doctor checks enforce safety, freshness, budgets, approvals, and environment
+  readiness
+- lockfiles, migrations, hot-load checks, deploy gates, and rollback plans make
+  updates reviewable
 
-- Treat YAML manifests and catalogs as the source of truth.
-- Treat generated files as outputs; regenerate them instead of hand-editing.
-- Keep Eve-native files where Eve expects them.
-- Keep Eve-Rails-only metadata outside Eve's `agent/` tree.
-- Validate before deploying.
-- Never commit secrets.
+Use this skill to modify an Eve Rails CLI project as if the reader has never
+seen Eve before.
 
-## What To Read First
+## Operating Rules
 
-Start with:
+- Treat `manifests/*.yml` and catalog entries as the source of truth.
+- Treat generated files under `agents/<name>/` as outputs; change manifests,
+  catalogs, or templates, then render again.
+- Keep Eve-native runtime files only where Eve expects them.
+- Keep Eve-Rails-only metadata outside the Eve `agent/` discovery tree.
+- Run `doctor` and `render --check` before deployment or release work.
+- Never hardcode credentials, tokens, Basic Auth values, API keys, or provider
+  secrets.
+- Prefer dry runs for risky operations: deploy, migrate, rollback, update, and
+  generator overwrites.
 
-```sh
-eve-rails-cli --help
-eve-rails-cli <command> --help
-```
+## Project Shape
 
-Then inspect:
-
-- `README.md` for install and command examples.
-- `examples/basic-fleet/README.md` for the runnable demo project.
-- `CHANGELOG.md` for release behavior.
-- `templates/agent/` for generated output shape.
-- `examples/basic-fleet/manifests/` for manifest and catalog examples.
-
-For Eve runtime details, read the Eve docs bundled with the generated agent's
-installed Eve package:
-
-```sh
-examples/basic-fleet/agents/support/node_modules/eve/docs/
-```
-
-If you are in a different generated agent, prefer that agent's
-`node_modules/eve/docs/` because it matches the installed runtime version.
-
-## Project Model
-
-An Eve Rails project typically has:
+A normal Eve Rails project looks like:
 
 ```txt
 manifests/
-  agents.yml
-  catalog.yml
-  environments.yml
+  agents.yml          # fleet defaults and concrete agent definitions
+  catalog.yml         # reusable component catalog
+  environments.yml    # env-specific requirements and production gates
 
 templates/
-  agent/
+  agent/              # Jinja-compatible templates used by render/apply
 
 agents/
   <agent-name>/
     package.json
     tsconfig.json
     evals/
+      evals.config.ts
+      *.eval.ts
     agent/
+      agent.ts
+      instructions.md
+      tools/
+      skills/
+      subagents/
+      channels/
+      schedules/
     .eve-rails/
+      approvals/
+      evals/
+      memory/
+      fixtures/
 ```
 
-In this repository, the demo project lives under `examples/basic-fleet/`.
+Eve discovers runtime surfaces inside `agents/<name>/agent/`. Put only
+Eve-native runtime folders there: `tools`, `skills`, `subagents`, `channels`,
+and `schedules`. Put Rails-layer contracts such as approval metadata, memory
+schemas, fixture data, and eval contract metadata under `.eve-rails/` so Eve
+does not treat them as unsupported runtime directories.
 
-## Eve-Native Versus Eve-Rails Metadata
+## Manifest Model
 
-Eve-native generated files belong under `agents/<name>/agent/` only when Eve
-supports that surface, for example:
+`manifests/agents.yml` defines defaults and agents:
 
-- `agent.ts`
-- `instructions.md`
-- `tools/`
-- `skills/`
-- `subagents/`
-- `channels/`
-- `schedules/`
+```yaml
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+  channels: []
+  schedules: []
+  evals: []
 
-Top-level Eve evals belong in:
+agents:
+  - name: support
+    version: 1.0.0
+    responsibility: Resolve customer support requests.
+    model: openai/gpt-5.5
+    owner: support-platform
+    tools:
+      refund_customer: 1.0.0
+    skills:
+      handle_refund: 1.0.0
+    channels: [slack]
+    schedules: [weekday_triage]
+    evals: [refund_policy]
+    memory:
+      customer_profile: 1.0.0
+    approvals:
+      refund_customer: required
+    auth: platform-oauth
+    visibility: internal
+    token_budget: 100000
+    cost_budget: 10
+    timeout: 30s
+```
 
-- `agents/<name>/evals/evals.config.ts`
-- `agents/<name>/evals/*.eval.ts`
+`manifests/catalog.yml` defines the reusable components referenced by
+manifests:
 
-Eve-Rails-only metadata belongs in:
+```yaml
+tools:
+  refund_customer:
+    version: 1.0.0
+    side_effects: money
+skills:
+  handle_refund:
+    version: 1.0.0
+evals:
+  refund_policy:
+    version: 1.0.0
+approvals:
+  required:
+    version: 1.0.0
+memory:
+  customer_profile:
+    version: 1.0.0
+    retention: 180d
+channels:
+  slack:
+    version: 1.0.0
+schedules:
+  weekday_triage:
+    version: 1.0.0
+    schedule: "0 9 * * 1-5"
+```
 
-- `agents/<name>/.eve-rails/approvals/`
-- `agents/<name>/.eve-rails/evals/`
-- `agents/<name>/.eve-rails/memory/`
-- `agents/<name>/.eve-rails/fixtures/`
+Risky tools with `side_effects: write`, `external`, `money`, or `production`
+must have approval policy coverage. Memory schemas need retention. Schedules
+must have owner/auth/visibility directly or inherit safe agent defaults.
 
-Do not place Rails-only folders such as `approvals`, `memory`, `fixtures`, or
-eval contract metadata directly under `agent/`; Eve discovery treats unknown
-directories there as unsupported.
+## Core Commands
 
-## Core Workflow
+Create or inspect a project:
 
-Plan or generate from manifests:
+```sh
+eve-rails-cli init my-fleet --template basic --model openai/gpt-5.5 --owner agent-platform --dry-run
+eve-rails-cli --help
+eve-rails-cli <command> --help
+```
+
+Plan and write generated agents:
 
 ```sh
 eve-rails-cli plan manifests/agents.yml
 eve-rails-cli apply manifests/agents.yml
-eve-rails-cli generate agent support --auth platform-oauth --dry-run
-eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
-```
-
-Render generated files:
-
-```sh
 eve-rails-cli render --all
 eve-rails-cli render --all --check
 ```
 
-Validate:
+Generate source-of-truth entries:
+
+```sh
+eve-rails-cli generate agent support --with-tools refund_customer --approval required --dry-run
+eve-rails-cli generate tool refund_customer --side-effects money
+eve-rails-cli generate skill handle_refund
+eve-rails-cli generate subagent researcher
+eve-rails-cli generate channel slack
+eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
+eve-rails-cli generate approval required
+eve-rails-cli generate eval refund_policy
+eve-rails-cli generate memory customer_profile --retention 180d
+eve-rails-cli generate migration customer_profile_v2
+eve-rails-cli generate batch manifests/batch.yml --dry-run
+```
+
+Validate safety and freshness:
 
 ```sh
 eve-rails-cli doctor --all
+eve-rails-cli doctor --all --templates --updates
 eve-rails-cli doctor --all --env production --connections --budgets
+eve-rails-cli doctor --all --fix --dry-run
 ```
 
-Run local project checks:
+`doctor --fix` may create missing placeholder eval stubs, generated
+directories, stale generated output from valid templates/manifests, and
+formatted generated metadata. It must not add credentials, weaken approvals,
+suppress failing evals, or change production safety policy.
+
+## Runtime Delegation
+
+Eve Rails CLI delegates runtime operations to generated Eve projects when
+appropriate:
 
 ```sh
-cargo fmt --check
-cargo test --locked
-cargo build --locked
+eve-rails-cli eval --agent support --dry-run
+eve-rails-cli test --agent support
+eve-rails-cli preview --agent support --dry-run
 ```
 
-Check a generated Eve agent:
+For direct Eve checks from an agent directory:
 
 ```sh
-cd examples/basic-fleet/agents/support
+cd agents/support
 npm run typecheck
 npm exec -- eve info --json
 ```
 
 `eve info` should report zero discovery errors and zero discovery warnings.
+Missing Node, npm, Eve, credentials, or generated files should be reported as
+actionable setup problems, not worked around by editing generated output.
 
-## Auth Profiles
+## Versioning, Migration, And Hot-Load
 
-Generated Eve channels support configurable auth profiles.
-
-- `platform-oauth`: Vercel OIDC plus local development auth.
-- `http-basic-env`: Vercel OIDC, local development auth, and HTTP Basic
-  credentials read from `EVE_RAILS_BASIC_AUTH_USERNAME` and
-  `EVE_RAILS_BASIC_AUTH_PASSWORD`.
-
-Rules:
-
-- Do not hardcode credentials in manifests, templates, or generated files.
-- Use `http-basic-env` for explicit smoke testing or project policy only.
-- Production protected routes should fail closed when unauthenticated.
-
-## Versioning And Hot-Load
-
-Use lockfiles and manifests to reason about updates:
+Use version commands to classify changes before deploying:
 
 ```sh
 eve-rails-cli outdated
@@ -171,46 +232,76 @@ eve-rails-cli update --agent support --minor --plan
 eve-rails-cli hotload --agent support --current 1.0.0 skill:summarize_thread@1.0.1
 ```
 
-The `hotload` command classifies compatibility. A `hotload` classification
-means the change is safe by Eve-Rails policy; a `redeploy` classification means
-the runtime or safety surface needs a deployment.
+Hot-load means the Eve Rails policy considers the change compatible without a
+full redeploy. Redeploy means the runtime surface or safety profile changed.
+Schedule changes that increase autonomous activity, approval changes, memory
+schema changes, auth changes, and production-write tool changes should not be
+treated as casual hot-loads.
 
-Memory schema changes require migrations. Generate and plan them with:
+Plan migrations before schema or contract changes:
 
 ```sh
-eve-rails-cli generate migration customer_profile_v2
 eve-rails-cli migrate --agent support --env production --dry-run
+eve-rails-cli migrate --fleet manifests/agents.yml --env production --dry-run
+eve-rails-cli migrate --agent support --env production --apply
 ```
 
-## Deploy And Verify
+Dry-run migration output must be safe to review and JSON-compatible when
+`--json` is used. Do not apply destructive migrations without an explicit plan.
 
-Always run a dry deploy preflight first:
+## Deploy And Rollback
+
+Always run deployment as a gated preflight first:
 
 ```sh
 eve-rails-cli deploy --agent support --env production --require-evals --require-doctor --require-approvals --dry-run
 ```
 
-For a real Eve deployment, run Eve from the generated agent directory:
+A non-dry deployment delegates to Eve from the selected generated agent
+directory. Production deploys should require doctor, evals, approvals, and
+environment readiness unless the project explicitly defines a safer
+non-production exception.
+
+Rollback is planned, not guessed:
 
 ```sh
-cd examples/basic-fleet/agents/support
-npm exec -- eve deploy
+eve-rails-cli rollback --agent support --to 1.0.0 --dry-run
 ```
 
-After deployment, verify:
+Unsafe rollback, memory schema rollback, approval policy rollback, and tool
+contract rollback should require explicit migration or rollback planning.
 
-- Public health route returns ready.
-- Protected routes reject unauthenticated requests.
-- Authenticated `/eve/v1/info` returns agent info with zero diagnostics.
-- A real session can be created and streamed when credentials are available.
+## Auth And Secrets
 
-## Before You Finish
+Supported generated channel auth profiles include:
 
-Confirm:
+- `platform-oauth`: platform identity/OIDC plus local development behavior.
+- `http-basic-env`: platform identity/OIDC plus HTTP Basic credentials read
+  from environment variables for explicit smoke tests or project policy.
 
-- Generated files are fresh with `render --all --check`.
-- Rust checks pass with `cargo fmt --check`, `cargo test --locked`, and
+Rules:
+
+- Do not hardcode auth strategy globally for every developer.
+- Select auth per manifest, environment, or generated channel policy.
+- Store local Basic Auth in environment variables such as
+  `EVE_RAILS_BASIC_AUTH_USERNAME` and `EVE_RAILS_BASIC_AUTH_PASSWORD`.
+- Store model/provider credentials in environment variables such as
+  `AI_GATEWAY_API_KEY`; never commit them.
+- Production protected routes should fail closed when unauthenticated.
+
+## Completion Checklist
+
+Before finishing a change:
+
+- `eve-rails-cli render --all --check` passes.
+- `eve-rails-cli doctor --all --templates --updates` passes for the relevant
+  manifests.
+- Production-affecting changes pass `doctor --env production --connections
+  --budgets`.
+- Generated Eve agents pass `npm run typecheck` and `npm exec -- eve info
+  --json` when Node/Eve dependencies are available.
+- Rust changes pass `cargo fmt --check`, `cargo test --locked`, and
   `cargo build --locked`.
-- Generated Eve agents pass `npm run typecheck` and `npm exec -- eve info`.
-- Changelog and version metadata are updated for release-facing changes.
-- No secrets are tracked.
+- Deployment and migration commands are dry-run verified before real execution.
+- No secrets, generated local caches, node_modules, or private planning docs are
+  tracked.
