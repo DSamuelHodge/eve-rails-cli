@@ -37,6 +37,8 @@ enum Command {
     Hotload(HotloadCommand),
     /// Run deploy preflight checks. Actual deployment delegates to Eve/Vercel later.
     Deploy(DeployCommand),
+    /// Plan rollback by agent or component version.
+    Rollback(RollbackCommand),
     /// Inspect one agent's composition.
     Inspect(AgentCommand),
     /// Print a fleet graph.
@@ -275,6 +277,53 @@ struct DeployCommand {
     /// Percentage of traffic for canary deployment.
     #[arg(long)]
     canary: Option<u8>,
+
+    /// Path to the fleet manifest.
+    #[arg(long, default_value = "manifests/agents.yml")]
+    manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
+    /// Path to the template directory.
+    #[arg(long, default_value = "templates/agent")]
+    template_dir: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RollbackCommand {
+    /// Agent to roll back.
+    #[arg(long)]
+    agent: String,
+
+    /// Target agent version.
+    #[arg(long)]
+    to: Option<String>,
+
+    /// Component rollback reference such as skill:handle_refund@1.0.0.
+    #[arg(long)]
+    component: Option<String>,
+
+    /// Path to the fleet manifest.
+    #[arg(long, default_value = "manifests/agents.yml")]
+    manifest: PathBuf,
+
+    /// Path to the reusable component catalog.
+    #[arg(long, default_value = "manifests/catalog.yml")]
+    catalog: PathBuf,
+
+    /// Path to the template directory.
+    #[arg(long, default_value = "templates/agent")]
+    template_dir: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -442,6 +491,7 @@ fn main() -> Result<()> {
         Command::Update(command) => update(command),
         Command::Hotload(command) => hotload(command),
         Command::Deploy(command) => deploy(command),
+        Command::Rollback(command) => rollback(command),
         Command::Inspect(command) => inspect(command),
         Command::Graph(command) => graph(command),
     }
@@ -938,19 +988,224 @@ fn classify_version_change(current: &str, next: &str) -> UpdateKind {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct DeployReport {
+    env: String,
+    agent: Option<String>,
+    gates: Vec<DeployGate>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeployGate {
+    name: String,
+    passed: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RollbackReport {
+    agent: String,
+    target: String,
+    operations: Vec<RollbackOperation>,
+    blocked: bool,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RollbackOperation {
+    path: PathBuf,
+    action: String,
+}
+
+fn deploy_preflight(
+    command: &DeployCommand,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+) -> Result<DeployReport> {
+    let mut gates = Vec::new();
+    let doctor_command = DoctorCommand {
+        all: command.agent.is_none(),
+        updates: true,
+        templates: true,
+        json: false,
+        manifest: command
+            .fleet
+            .clone()
+            .unwrap_or_else(|| command.manifest.clone()),
+        catalog: command.catalog.clone(),
+        template_dir: command.template_dir.clone(),
+    };
+    let doctor = run_doctor(manifest, catalog, &doctor_command)?;
+    let doctor_passed = !doctor.has_failures();
+    gates.push(DeployGate {
+        name: "doctor".to_string(),
+        passed: !command.require_doctor || doctor_passed,
+        message: if doctor_passed {
+            "doctor checks pass".to_string()
+        } else {
+            "doctor checks failed".to_string()
+        },
+    });
+
+    let evals_passed = eval_gate_passes(manifest, command.agent.as_deref());
+    gates.push(DeployGate {
+        name: "evals".to_string(),
+        passed: !command.require_evals || evals_passed,
+        message: if evals_passed {
+            "required eval references are present".to_string()
+        } else {
+            "one or more deploy targets have no eval references".to_string()
+        },
+    });
+
+    gates.push(DeployGate {
+        name: "approval-coverage".to_string(),
+        passed: validate_manifest(manifest, catalog)
+            .errors
+            .iter()
+            .all(|error| !error.contains("risky tool")),
+        message: "risky tool approval coverage checked".to_string(),
+    });
+
+    gates.push(DeployGate {
+        name: "rollback-target".to_string(),
+        passed: true,
+        message: "rollback metadata will use generated manifest and versions.lock".to_string(),
+    });
+
+    Ok(DeployReport {
+        env: command.env.clone(),
+        agent: command.agent.clone(),
+        gates,
+    })
+}
+
+fn eval_gate_passes(manifest: &FleetManifest, agent_filter: Option<&str>) -> bool {
+    manifest
+        .agents
+        .iter()
+        .filter(|agent| agent_filter.is_none_or(|filter| filter == agent.name))
+        .all(|agent| !effective_evals(agent, manifest).is_empty())
+}
+
+fn rollback_plan(
+    command: &RollbackCommand,
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+) -> Result<RollbackReport> {
+    let agent = manifest
+        .agents
+        .iter()
+        .find(|agent| agent.name == command.agent)
+        .with_context(|| format!("agent '{}' not found", command.agent))?;
+    let target = command
+        .to
+        .clone()
+        .or_else(|| command.component.clone())
+        .context("pass --to <version> or --component kind:name@version")?;
+    let component = command
+        .component
+        .as_deref()
+        .map(ComponentRef::parse)
+        .transpose()?;
+    let blocked = component
+        .as_ref()
+        .is_some_and(|component| component.kind == ComponentKind::Memory);
+    let reason = if blocked {
+        Some("memory rollback requires an explicit migration plan".to_string())
+    } else {
+        None
+    };
+    let renderer = Renderer::load(&command.template_dir)?;
+    let rendered = renderer.render_agent(agent, manifest, catalog)?;
+    let operations = rendered
+        .into_iter()
+        .filter(|file| {
+            file.path.ends_with("agent.manifest.yml") || file.path.ends_with("versions.lock")
+        })
+        .map(|file| RollbackOperation {
+            path: file.path,
+            action: "restore".to_string(),
+        })
+        .collect();
+
+    Ok(RollbackReport {
+        agent: command.agent.clone(),
+        target,
+        operations,
+        blocked,
+        reason,
+    })
+}
+
 fn deploy(command: DeployCommand) -> Result<()> {
-    println!("Deploy preflight for env {}", command.env);
-    if command.require_doctor {
-        println!("Doctor gate required.");
+    let manifest_path = command.fleet.as_deref().unwrap_or(&command.manifest);
+    let manifest = load_manifest(manifest_path)?;
+    let catalog = load_catalog(&command.catalog)?;
+    let report = deploy_preflight(&command, &manifest, &catalog)?;
+    let passed = !report.gates.iter().any(|gate| !gate.passed);
+
+    if command.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return if passed {
+            Ok(())
+        } else {
+            bail!("deploy preflight failed")
+        };
     }
-    if command.require_evals {
-        println!("Eval gate required.");
+
+    println!("Deploy preflight for {}", command.env);
+    if let Some(agent) = &command.agent {
+        println!("Agent: {agent}");
     }
     if let Some(canary) = command.canary {
         println!("Canary: {canary}%");
     }
-    println!("Deployment delegation is stubbed until PR 8.");
-    Ok(())
+    for gate in &report.gates {
+        println!(
+            "[{}] {} - {}",
+            if gate.passed { "pass" } else { "fail" },
+            gate.name,
+            gate.message
+        );
+    }
+    println!("Deployment delegation to Eve/Vercel is intentionally not performed yet.");
+
+    if passed {
+        Ok(())
+    } else {
+        bail!("deploy preflight failed")
+    }
+}
+
+fn rollback(command: RollbackCommand) -> Result<()> {
+    let manifest = load_manifest(&command.manifest)?;
+    let catalog = load_catalog(&command.catalog)?;
+    let report = rollback_plan(&command, &manifest, &catalog)?;
+    let blocked = report.blocked;
+
+    if command.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return if blocked {
+            bail!("rollback requires migration")
+        } else {
+            Ok(())
+        };
+    }
+
+    println!("Rollback plan for {}", command.agent);
+    for operation in &report.operations {
+        println!("{} {}", operation.action, operation.path.display());
+    }
+    if let Some(reason) = &report.reason {
+        println!("{reason}");
+    }
+
+    if blocked {
+        bail!("rollback requires migration")
+    } else {
+        Ok(())
+    }
 }
 
 fn inspect(command: AgentCommand) -> Result<()> {
@@ -2937,6 +3192,108 @@ agents:
                 .contains("add_customer_tier")
         );
         assert!(changes[0].content.contains("export async function up()"));
+    }
+
+    #[test]
+    fn deploy_preflight_fails_when_doctor_gate_fails() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].approvals.clear();
+        let report =
+            deploy_preflight(&deploy_command(true, false), &manifest, &valid_catalog()).unwrap();
+
+        assert!(
+            report
+                .gates
+                .iter()
+                .any(|gate| gate.name == "doctor" && !gate.passed)
+        );
+    }
+
+    #[test]
+    fn deploy_preflight_fails_when_eval_gate_fails() {
+        let mut manifest = valid_manifest();
+        manifest.defaults.evals.clear();
+        manifest.agents[0].evals.clear();
+        let report =
+            deploy_preflight(&deploy_command(false, true), &manifest, &valid_catalog()).unwrap();
+
+        assert!(
+            report
+                .gates
+                .iter()
+                .any(|gate| gate.name == "evals" && !gate.passed)
+        );
+    }
+
+    #[test]
+    fn rollback_restores_manifest_and_lockfile() {
+        let manifest = valid_manifest();
+        let report = rollback_plan(
+            &rollback_command(Some("1.0.0"), None),
+            &manifest,
+            &valid_catalog(),
+        )
+        .expect("rollback");
+
+        assert!(!report.blocked);
+        assert!(
+            report
+                .operations
+                .iter()
+                .any(|operation| operation.path.ends_with("agent.manifest.yml"))
+        );
+        assert!(
+            report
+                .operations
+                .iter()
+                .any(|operation| operation.path.ends_with("versions.lock"))
+        );
+    }
+
+    #[test]
+    fn memory_component_rollback_requires_migration() {
+        let manifest = valid_manifest();
+        let report = rollback_plan(
+            &rollback_command(None, Some("memory:customer_profile@1.0.0")),
+            &manifest,
+            &valid_catalog(),
+        )
+        .expect("rollback");
+
+        assert!(report.blocked);
+        assert!(
+            report
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("memory rollback"))
+        );
+    }
+
+    fn deploy_command(require_doctor: bool, require_evals: bool) -> DeployCommand {
+        DeployCommand {
+            agent: Some("billing".to_string()),
+            fleet: None,
+            env: "staging".to_string(),
+            require_evals,
+            require_doctor,
+            canary: None,
+            manifest: PathBuf::from("manifests/agents.yml"),
+            catalog: PathBuf::from("manifests/catalog.yml"),
+            template_dir: PathBuf::from("templates/agent"),
+            json: false,
+        }
+    }
+
+    fn rollback_command(to: Option<&str>, component: Option<&str>) -> RollbackCommand {
+        RollbackCommand {
+            agent: "billing".to_string(),
+            to: to.map(str::to_string),
+            component: component.map(str::to_string),
+            manifest: PathBuf::from("manifests/agents.yml"),
+            catalog: PathBuf::from("manifests/catalog.yml"),
+            template_dir: PathBuf::from("templates/agent"),
+            json: false,
+        }
     }
 
     #[test]
