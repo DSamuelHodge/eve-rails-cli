@@ -13,3 +13,9 @@
 .env
 .env.*
 !.env.example
+
+# Generated Eve app local artifacts
+agents/*/node_modules/
+agents/*/.eve/
+agents/*/.output/
+agents/*/package-lock.json
