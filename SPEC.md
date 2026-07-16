@@ -30,22 +30,24 @@ The philosophy is captured in `RAILS_PHILOSOPHY_FOR_EVE.md`. This spec turns tha
 ### Generate
 
 ```sh
-npx eve generate agent support
-npx eve generate tool refund_customer
-npx eve generate skill handle_refund
-npx eve generate subagent researcher
-npx eve generate channel slack
-npx eve generate approval refund_customer
-npx eve generate eval refund_policy
-npx eve generate memory customer_profile
+eve-rails-cli generate agent support --auth platform-oauth
+eve-rails-cli generate tool refund_customer --side-effects money
+eve-rails-cli generate skill handle_refund
+eve-rails-cli generate subagent researcher
+eve-rails-cli generate channel slack
+eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
+eve-rails-cli generate approval refund_customer
+eve-rails-cli generate eval refund_policy
+eve-rails-cli generate memory customer_profile --retention 180d
+eve-rails-cli generate migration customer_profile_v2
 ```
 
 ### Batch
 
 ```sh
-npx eve plan manifests/agents.yml
-npx eve apply manifests/agents.yml
-npx eve generate batch manifests/agents.yml
+eve-rails-cli plan manifests/agents.yml
+eve-rails-cli apply manifests/agents.yml
+eve-rails-cli generate batch manifests/agents.yml
 ```
 
 In this repository, runnable demo assets live under `examples/basic-fleet/`.
@@ -54,41 +56,41 @@ The root-level `manifests/` and `agents/` paths remain the convention for a user
 ### Render
 
 ```sh
-npx eve render --agent support
-npx eve render --all --check
+eve-rails-cli render --agent support
+eve-rails-cli render --all --check
 ```
 
 ### Validate
 
 ```sh
-npx eve doctor
-npx eve doctor --all
-npx eve doctor --updates
-npx eve doctor --templates
-npx eve doctor --env production --connections --budgets
-npx eve doctor --fix
+eve-rails-cli doctor
+eve-rails-cli doctor --all
+eve-rails-cli doctor --updates
+eve-rails-cli doctor --templates
+eve-rails-cli doctor --env production --connections --budgets
+eve-rails-cli doctor --fix
 ```
 
 ### Version and Update
 
 ```sh
-npx eve outdated
-npx eve update --agent support --minor
-npx eve hotload --agent support --skill handle_refund@2.0.1
-npx eve rollback --agent support --to 1.3.2
+eve-rails-cli outdated
+eve-rails-cli update --agent support --minor --plan
+eve-rails-cli hotload --agent support --current 1.0.0 skill:summarize_thread@1.0.1
+eve-rails-cli rollback --agent support --to 1.3.2
 ```
 
 ### Deploy and Operate
 
 ```sh
-npx eve deploy --agent support --env staging
-npx eve deploy --agent support --env production --require-evals --require-doctor --require-approvals --dry-run
-npx eve eval --agent support --dry-run
-npx eve test --agent support
-npx eve preview --agent support --dry-run
-npx eve migrate --agent support --env production --dry-run
-npx eve inspect --agent support
-npx eve graph --all --format mermaid
+eve-rails-cli deploy --agent support --env staging --dry-run
+eve-rails-cli deploy --agent support --env production --require-evals --require-doctor --require-approvals
+eve-rails-cli eval --agent support --dry-run
+eve-rails-cli test --agent support
+eve-rails-cli preview --agent support --dry-run
+eve-rails-cli migrate --agent support --env production --dry-run
+eve-rails-cli inspect --agent support
+eve-rails-cli graph --all --format mermaid
 ```
 
 ## File Structure
@@ -98,7 +100,11 @@ npx eve graph --all --format mermaid
   examples/
     basic-fleet/
       manifests/
+        agents.yml
+        catalog.yml
+        environments.yml
       fixtures/
+        batch-10-agents.yml
       agents/
 
   manifests/
@@ -120,16 +126,14 @@ npx eve graph --all --format mermaid
       agent.README.md.j2
       channel.ts.j2
 
-  catalog/
-    tools/
-    skills/
-    evals/
-    approvals/
-    memory/
-    channels/
-
   agents/
     support/
+      package.json
+      tsconfig.json
+      evals/
+        evals.config.ts
+        standard.eval.ts
+
       agent/
         instructions.md
         agent.ts
@@ -165,9 +169,14 @@ agents:
     subagents: []
     channels: []
     auth: platform-oauth
+    visibility: internal
+    schedules: []
     approvals: {}
     evals: []
     memory: {}
+    cost_budget: 25.0
+    token_budget: 1000000
+    timeout: 60s
 ```
 
 Auth profile conventions:
@@ -175,6 +184,13 @@ Auth profile conventions:
 - `platform-oauth` keeps Eve's Vercel OIDC plus local development route policy.
 - `http-basic-env` adds Eve `httpBasic()` using `EVE_RAILS_BASIC_AUTH_USERNAME` and `EVE_RAILS_BASIC_AUTH_PASSWORD`, intended for staging or production smoke tests.
 - Other production auth choices should be generated as explicit profiles instead of hardcoded into the framework template.
+
+Generated auth behavior:
+
+- `agent/channels/eve.ts` is Eve-native and generated from the selected auth profile.
+- `http-basic-env` must read credentials from environment variables; manifests and templates must not contain secrets.
+- Unauthenticated production routes must fail closed.
+- Public health checks remain available at Eve's health route.
 
 Validation rules:
 

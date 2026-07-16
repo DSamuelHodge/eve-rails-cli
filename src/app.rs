@@ -45,15 +45,15 @@ enum Command {
     Outdated(ManifestCommand),
     /// Plan or apply component updates.
     Update(UpdateCommand),
-    /// Hot-load a compatible component update.
+    /// Classify a component update as hot-loadable or redeploy-only.
     Hotload(HotloadCommand),
-    /// Run deploy gates and optionally delegate deployment to Eve/Vercel.
+    /// Run deploy gates and delegate non-dry runs to Eve/Vercel.
     Deploy(DeployCommand),
-    /// Delegate eval execution to Eve for a generated agent.
+    /// Delegate eval execution to Eve from a generated agent directory.
     Eval(RuntimeCommand),
-    /// Run CLI checks plus generated-agent runtime checks.
+    /// Run CLI checks plus generated agent TypeScript and Eve runtime checks.
     Test(RuntimeCommand),
-    /// Preview a generated agent with Eve dev.
+    /// Preview or print the Eve dev command for a generated agent.
     Preview(RuntimeCommand),
     /// Plan or apply behavior and memory migrations.
     Migrate(MigrateCommand),
@@ -293,7 +293,7 @@ struct GenerateNamed {
     #[arg(long)]
     risk: Option<String>,
 
-    /// Authentication mode.
+    /// Auth profile for generated Eve routes, such as platform-oauth or http-basic-env.
     #[arg(long)]
     auth: Option<String>,
 
@@ -371,11 +371,11 @@ struct UpdateCommand {
 
 #[derive(Debug, Args)]
 struct HotloadCommand {
-    /// Agent receiving the hot-loaded update.
+    /// Agent receiving the compatible update.
     #[arg(long)]
     agent: String,
 
-    /// Current running component version.
+    /// Current running component version to compare against.
     #[arg(long, default_value = "1.0.0")]
     current: String,
 
@@ -383,7 +383,7 @@ struct HotloadCommand {
     #[arg(long)]
     json: bool,
 
-    /// Component reference such as skill:handle_refund@2.0.1.
+    /// Component reference such as skill:summarize_thread@1.0.1.
     component: String,
 }
 

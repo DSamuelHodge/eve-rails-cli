@@ -41,7 +41,7 @@ eve-rails-cli --help
 | ![schedule](https://img.shields.io/badge/schedule-cron-9333ea) | `eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"` |
 | ![outdated](https://img.shields.io/badge/outdated-updates-eab308) | `eve-rails-cli outdated --agent support` |
 | ![update](https://img.shields.io/badge/update-versions-0891b2) | `eve-rails-cli update --agent support --minor` |
-| ![hotload](https://img.shields.io/badge/hotload-compatible-db2777) | `eve-rails-cli hotload --agent support --skill handle_refund@2.0.1` |
+| ![hotload](https://img.shields.io/badge/hotload-compatible-db2777) | `eve-rails-cli hotload --agent support skill:summarize_thread@1.0.1` |
 | ![eval](https://img.shields.io/badge/eval-delegate-9333ea) | `eve-rails-cli eval --agent support --dry-run` |
 | ![test](https://img.shields.io/badge/test-runtime-0284c7) | `eve-rails-cli test --agent support` |
 | ![preview](https://img.shields.io/badge/preview-dev-65a30d) | `eve-rails-cli preview --agent support --dry-run` |
