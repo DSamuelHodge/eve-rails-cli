@@ -29,38 +29,85 @@ the operational backbone around Eve:
 
 ## Quick Start
 
-Build a small fleet from shared catalog components:
+### 1. Install
 
 ```sh
 git clone https://github.com/DSamuelHodge/eve-rails-cli.git
 cd eve-rails-cli
 cargo install --path .
-
-eve-rails-cli init support-fleet --template basic --yes
-cd support-fleet
-
-eve-rails-cli generate tool search_customers --side-effects read
-eve-rails-cli generate tool prepare_refund --side-effects money
-eve-rails-cli generate skill triage_customer_issue
-eve-rails-cli generate eval standard
-
-eve-rails-cli generate agent support \
-  --with-tools search_customers \
-  --with-skills triage_customer_issue \
-  --with-evals standard
-
-eve-rails-cli generate agent billing \
-  --with-tools search_customers,prepare_refund \
-  --with-skills triage_customer_issue \
-  --with-evals standard \
-  --approval required
-
-eve-rails-cli apply manifests/agents.yml
-eve-rails-cli doctor --all
-eve-rails-cli render --all --check
 ```
 
-Then verify any generated Eve agent:
+### 2. Create one agent
+
+```sh
+eve-rails-cli init my-project --yes
+cd my-project
+
+eve-rails-cli generate agent support
+eve-rails-cli apply manifests/agents.yml
+eve-rails-cli doctor --all
+```
+
+You now have a working Eve agent in `agents/support/`.
+
+### 3. Add reusable pieces
+
+```sh
+eve-rails-cli generate tool search_customers --side-effects read
+eve-rails-cli generate skill triage_customer_issue
+```
+
+Then attach them to `support` in `manifests/agents.yml`:
+
+```yaml
+agents:
+  - name: support
+    tools:
+      search_customers: 1.0.0
+    skills:
+      triage_customer_issue: 1.0.0
+```
+
+```sh
+eve-rails-cli apply manifests/agents.yml
+```
+
+Tools and skills live in `manifests/catalog.yml` so they can be reused across
+more agents later.
+
+### 4. What just got created
+
+Eve Rails CLI does not make manifests mysterious. `generate` writes reusable
+pieces to `manifests/catalog.yml`, while `manifests/agents.yml` says which agent
+uses which pieces.
+
+After step 3, `catalog.yml` includes:
+
+```yaml
+tools:
+  search_customers:
+    version: 1.0.0
+    side_effects: read
+skills:
+  triage_customer_issue:
+    version: 1.0.0
+```
+
+And `agents.yml` connects those reusable pieces to the agent:
+
+```yaml
+agents:
+  - name: support
+    tools:
+      search_customers: 1.0.0
+    skills:
+      triage_customer_issue: 1.0.0
+```
+
+Edit the YAML by hand any time. Run `eve-rails-cli apply manifests/agents.yml`
+again after manual edits to re-render generated agents.
+
+### 5. Verify the generated agent
 
 ```sh
 cd agents/support
@@ -68,6 +115,9 @@ npm install
 npm run typecheck
 npm exec -- eve info --json
 ```
+
+Ready for more than one agent, or tools that need human sign-off, such as
+anything that moves money? See [Building a fleet](docs/fleet.md).
 
 ## Requirements
 
