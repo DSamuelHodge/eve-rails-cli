@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use minijinja::{Environment, context};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 mod doctor;
 mod renderer;
@@ -21,6 +22,7 @@ use versioning::*;
 #[derive(Debug, Parser)]
 #[command(name = "eve-rails-cli")]
 #[command(about = "Rails-inspired convention layer for Eve agent fleets")]
+#[command(disable_help_subcommand = true)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -192,7 +194,7 @@ struct DoctorCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, default_value = "templates/agent")]
+    #[arg(long = "template-dir", default_value = "templates/agent")]
     template_dir: PathBuf,
 
     /// Path to environment policy config.
@@ -489,7 +491,11 @@ struct DeployCommand {
     catalog: PathBuf,
 
     /// Path to the template directory.
-    #[arg(long, alias = "templates", default_value = "templates/agent")]
+    #[arg(
+        long = "templates",
+        alias = "template-dir",
+        default_value = "templates/agent"
+    )]
     template_dir: PathBuf,
 
     /// Emit machine-readable JSON.
@@ -565,9 +571,17 @@ struct RollbackCommand {
     #[arg(long)]
     to: Option<String>,
 
+    /// Deployed Eve/Vercel deployment id to roll back to.
+    #[arg(long, alias = "deployment-id")]
+    deployment: Option<String>,
+
     /// Component rollback reference such as skill:handle_refund@1.0.0.
     #[arg(long)]
     component: Option<String>,
+
+    /// Deployment environment.
+    #[arg(long, default_value = "staging")]
+    env: String,
 
     /// Path to the fleet manifest.
     #[arg(long, default_value = "manifests/agents.yml")]
@@ -580,6 +594,10 @@ struct RollbackCommand {
     /// Path to the template directory.
     #[arg(long, alias = "templates", default_value = "templates/agent")]
     template_dir: PathBuf,
+
+    /// Show rollback plan and delegated command without invoking Eve.
+    #[arg(long)]
+    dry_run: bool,
 
     /// Emit machine-readable JSON.
     #[arg(long)]
@@ -1202,12 +1220,57 @@ fn doctor(command: DoctorCommand) -> Result<()> {
     println!("Templates: {}", command.template_dir.display());
     println!("Agents checked: {}", manifest.agents.len());
     print_doctor_report(&report);
+    if command.fix {
+        let changed = apply_doctor_fixes(&manifest, &catalog, &command)?;
+        if changed.is_empty() {
+            println!("No generated-file repairs needed.");
+        } else if command.dry_run {
+            for operation in changed {
+                println!("would {} {}", operation.action, operation.path.display());
+            }
+        } else {
+            for operation in changed {
+                println!("{} {}", operation.action, operation.path.display());
+            }
+        }
+    }
 
     if passed {
         Ok(())
     } else {
         bail!("doctor failed")
     }
+}
+
+fn apply_doctor_fixes(
+    manifest: &FleetManifest,
+    catalog: &CatalogManifest,
+    command: &DoctorCommand,
+) -> Result<Vec<BatchOperationReport>> {
+    if !command.fix {
+        return Ok(Vec::new());
+    }
+    let plan = batch_plan(manifest, catalog, &command.template_dir)?;
+    let mut changed = Vec::new();
+    for operation in plan.operations {
+        if operation.action == BatchAction::Skip {
+            continue;
+        }
+        changed.push(BatchOperationReport {
+            path: operation.path.clone(),
+            action: operation.action,
+        });
+        if command.dry_run {
+            continue;
+        }
+        if let Some(parent) = operation.path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create '{}'", parent.display()))?;
+        }
+        fs::write(&operation.path, &operation.content)
+            .with_context(|| format!("failed to write '{}'", operation.path.display()))?;
+    }
+    Ok(changed)
 }
 
 fn generate(command: GenerateCommand) -> Result<()> {
@@ -1252,7 +1315,7 @@ fn runtime_delegate(kind: RuntimeKind, command: RuntimeCommand) -> Result<()> {
         .find(|agent| agent.name == command.agent)
         .with_context(|| format!("agent '{}' not found", command.agent))?;
     let agent_dir = PathBuf::from("agents").join(&agent.name);
-    let commands = runtime_commands(kind, &agent_dir);
+    let commands = runtime_commands(kind);
     if command.json {
         println!(
             "{}",
@@ -1283,8 +1346,7 @@ fn runtime_delegate(kind: RuntimeKind, command: RuntimeCommand) -> Result<()> {
     Ok(())
 }
 
-fn runtime_commands(kind: RuntimeKind, agent_dir: &Path) -> Vec<Vec<String>> {
-    let dir = agent_dir.display().to_string();
+fn runtime_commands(kind: RuntimeKind) -> Vec<Vec<String>> {
     match kind {
         RuntimeKind::Eval => vec![vec![
             "npm".to_string(),
@@ -1309,9 +1371,6 @@ fn runtime_commands(kind: RuntimeKind, agent_dir: &Path) -> Vec<Vec<String>> {
             ],
         ],
         RuntimeKind::Preview => vec![vec![
-            "cd".to_string(),
-            dir,
-            "&&".to_string(),
             "npm".to_string(),
             "exec".to_string(),
             "--".to_string(),
@@ -1343,6 +1402,7 @@ struct MigrationPlan {
     env: String,
     agent: Option<String>,
     pending: Vec<PathBuf>,
+    ledger: PathBuf,
     apply: bool,
 }
 
@@ -1350,28 +1410,32 @@ fn migrate(command: MigrateCommand) -> Result<()> {
     let manifest_path = command.fleet.as_deref().unwrap_or(&command.manifest);
     let manifest = load_manifest(manifest_path)?;
     let agents = selected_agents(&manifest, command.agent.as_deref())?;
-    let mut pending = Vec::new();
+    let ledger = migration_ledger_path(&command.env);
+    let mut applied = load_applied_migrations(&ledger)?;
+    let mut pending = collect_migrations(Path::new("agents/migrations"))?;
     for agent in agents {
         let path = PathBuf::from("agents")
             .join(&agent.name)
             .join("agent")
             .join("migrations");
-        if path.exists() {
-            for entry in fs::read_dir(&path)
-                .with_context(|| format!("failed to read '{}'", path.display()))?
-            {
-                let entry = entry?;
-                if entry.path().extension().is_some_and(|ext| ext == "ts") {
-                    pending.push(entry.path());
-                }
-            }
+        pending.extend(collect_migrations(&path)?);
+    }
+    pending.sort();
+    pending.dedup();
+    pending.retain(|path| !applied.contains(&migration_key(path)));
+    let should_apply = command.apply && !command.dry_run;
+    if should_apply {
+        for path in &pending {
+            applied.insert(migration_key(path));
         }
+        write_applied_migrations(&ledger, &applied)?;
     }
     let plan = MigrationPlan {
         env: command.env,
         agent: command.agent,
         pending,
-        apply: command.apply && !command.dry_run,
+        ledger,
+        apply: should_apply,
     };
     if command.json {
         println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -1379,6 +1443,7 @@ fn migrate(command: MigrateCommand) -> Result<()> {
         println!("Migration plan for {}", manifest_path.display());
         println!("Environment: {}", plan.env);
         println!("Apply: {}", plan.apply);
+        println!("Ledger: {}", plan.ledger.display());
         if plan.pending.is_empty() {
             println!("No pending migration files found.");
         } else {
@@ -1390,10 +1455,68 @@ fn migrate(command: MigrateCommand) -> Result<()> {
     Ok(())
 }
 
+fn migration_ledger_path(env: &str) -> PathBuf {
+    PathBuf::from(".eve-rails")
+        .join("migrations")
+        .join(format!("{env}.applied"))
+}
+
+fn collect_migrations(path: &Path) -> Result<Vec<PathBuf>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut pending = Vec::new();
+    for entry in walkdir::WalkDir::new(path).min_depth(1) {
+        let entry = entry.with_context(|| format!("failed to read '{}'", path.display()))?;
+        if entry.file_type().is_file() && entry.path().extension().is_some_and(|ext| ext == "ts") {
+            pending.push(entry.path().to_path_buf());
+        }
+    }
+    Ok(pending)
+}
+
+fn load_applied_migrations(path: &Path) -> Result<BTreeSet<String>> {
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+    Ok(content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn write_applied_migrations(path: &Path, applied: &BTreeSet<String>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create '{}'", parent.display()))?;
+    }
+    let mut content = applied.iter().cloned().collect::<Vec<_>>().join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    fs::write(path, content).with_context(|| format!("failed to write '{}'", path.display()))
+}
+
+fn migration_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn update(command: UpdateCommand) -> Result<()> {
     let manifest_path = command.fleet.as_deref().unwrap_or(&command.manifest);
     let manifest = load_manifest(manifest_path)?;
     let catalog = load_catalog(&command.catalog)?;
+    if let Some(agent) = command.agent.as_deref()
+        && !manifest
+            .agents
+            .iter()
+            .any(|candidate| candidate.name == agent)
+    {
+        bail!("agent '{agent}' not found");
+    }
     let updates = collect_version_reports(&manifest, &catalog, command.agent.as_deref());
 
     if command.json {
@@ -1412,8 +1535,102 @@ fn update(command: UpdateCommand) -> Result<()> {
     println!("Update plan for {}", manifest_path.display());
     print_version_reports(&updates);
     if command.apply {
-        println!("Apply is reserved for PR 6 follow-up; manifest rewriting is not performed yet.");
+        let changed = apply_updates(&manifest_path, &command.catalog, &updates, &command)?;
+        if changed {
+            println!("Updated {}", manifest_path.display());
+        } else {
+            println!("No applicable updates.");
+        }
     }
+    Ok(())
+}
+
+fn apply_updates(
+    manifest_path: &Path,
+    catalog_path: &Path,
+    reports: &[VersionReport],
+    command: &UpdateCommand,
+) -> Result<bool> {
+    let applicable = reports
+        .iter()
+        .filter(|report| update_allowed(report.update, command))
+        .filter_map(|report| {
+            report
+                .resolved
+                .as_ref()
+                .map(|resolved| (report, resolved.as_str()))
+        })
+        .filter(|(report, resolved)| report.requested != *resolved)
+        .collect::<Vec<_>>();
+
+    if applicable.is_empty() {
+        return Ok(false);
+    }
+
+    let mut manifest_value: serde_yaml::Value = serde_yaml::from_str(
+        &fs::read_to_string(manifest_path)
+            .with_context(|| format!("failed to read manifest '{}'", manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse manifest '{}'", manifest_path.display()))?;
+
+    for (report, resolved) in applicable {
+        update_manifest_component_version(&mut manifest_value, report, resolved)?;
+    }
+
+    let rendered = serde_yaml::to_string(&manifest_value).with_context(|| {
+        format!(
+            "failed to render updated manifest '{}'",
+            manifest_path.display()
+        )
+    })?;
+    fs::write(manifest_path, rendered)
+        .with_context(|| format!("failed to write manifest '{}'", manifest_path.display()))?;
+    println!("Resolved versions from {}", catalog_path.display());
+    Ok(true)
+}
+
+fn update_allowed(update: UpdateKind, command: &UpdateCommand) -> bool {
+    matches!(update, UpdateKind::Patch) && command.patch
+        || matches!(update, UpdateKind::Minor) && command.minor
+        || matches!(update, UpdateKind::Major) && command.major
+}
+
+fn update_manifest_component_version(
+    manifest: &mut serde_yaml::Value,
+    report: &VersionReport,
+    resolved: &str,
+) -> Result<()> {
+    let agents = manifest
+        .get_mut("agents")
+        .and_then(serde_yaml::Value::as_sequence_mut)
+        .context("manifest must contain an agents list")?;
+    let agent = agents
+        .iter_mut()
+        .find(|agent| agent.get("name").and_then(serde_yaml::Value::as_str) == Some(&report.agent))
+        .with_context(|| format!("agent '{}' not found", report.agent))?;
+    let section = match report.component_kind.as_str() {
+        "tool" => "tools",
+        "skill" => "skills",
+        "memory" => "memory",
+        other => bail!("cannot safely apply {other} updates in manifest maps"),
+    };
+    let components = agent
+        .get_mut(section)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .with_context(|| {
+            format!(
+                "agent '{}' has no {section} map entry to update",
+                report.agent
+            )
+        })?;
+    let key = serde_yaml::Value::String(report.component.clone());
+    let value = components.get_mut(&key).with_context(|| {
+        format!(
+            "agent '{}' has no {} entry '{}'",
+            report.agent, section, report.component
+        )
+    })?;
+    *value = serde_yaml::Value::String(resolved.to_string());
     Ok(())
 }
 
@@ -1672,6 +1889,10 @@ struct DeployGate {
 struct RollbackReport {
     agent: String,
     target: String,
+    env: String,
+    dry_run: bool,
+    deployment: Option<String>,
+    delegated_command: Vec<String>,
     operations: Vec<RollbackOperation>,
     blocked: bool,
     reason: Option<String>,
@@ -1746,19 +1967,39 @@ fn deploy_preflight(
         message: "rollback metadata will use generated manifest and versions.lock".to_string(),
     });
 
+    if command.canary.is_some() {
+        bail!("canary deploy is not supported by the current Eve deploy CLI");
+    }
+    if command.promote {
+        bail!("promote is not supported by the current Eve deploy CLI");
+    }
+    let delegated_command = if let Some(rollback_to) = &command.rollback_to {
+        vec![
+            "npm".to_string(),
+            "exec".to_string(),
+            "--".to_string(),
+            "vercel".to_string(),
+            "rollback".to_string(),
+            rollback_to.clone(),
+            "--yes".to_string(),
+        ]
+    } else {
+        vec![
+            "npm".to_string(),
+            "exec".to_string(),
+            "--".to_string(),
+            "eve".to_string(),
+            "deploy".to_string(),
+        ]
+    };
+
     Ok(DeployReport {
         env: command.env.clone(),
         agent: command.agent.clone(),
         dry_run: command.dry_run,
         promote: command.promote,
         rollback_to: command.rollback_to.clone(),
-        delegated_command: vec![
-            "npm".to_string(),
-            "exec".to_string(),
-            "--".to_string(),
-            "eve".to_string(),
-            "deploy".to_string(),
-        ],
+        delegated_command,
         gates,
     })
 }
@@ -1782,15 +2023,19 @@ fn rollback_plan(
         .find(|agent| agent.name == command.agent)
         .with_context(|| format!("agent '{}' not found", command.agent))?;
     let target = command
-        .to
+        .deployment
         .clone()
+        .or_else(|| command.to.clone())
         .or_else(|| command.component.clone())
-        .context("pass --to <version> or --component kind:name@version")?;
+        .context("pass --to <version>, --deployment <id>, or --component kind:name@version")?;
     let component = command
         .component
         .as_deref()
         .map(ComponentRef::parse)
         .transpose()?;
+    if command.deployment.is_some() && component.is_some() {
+        bail!("--deployment cannot be combined with --component");
+    }
     let blocked = component
         .as_ref()
         .is_some_and(|component| component.kind == ComponentKind::Memory);
@@ -1799,6 +2044,21 @@ fn rollback_plan(
     } else {
         None
     };
+    let delegated_command = command
+        .deployment
+        .as_ref()
+        .map(|deployment| {
+            vec![
+                "npm".to_string(),
+                "exec".to_string(),
+                "--".to_string(),
+                "vercel".to_string(),
+                "rollback".to_string(),
+                deployment.clone(),
+                "--yes".to_string(),
+            ]
+        })
+        .unwrap_or_default();
     let renderer = Renderer::load(&command.template_dir)?;
     let rendered = renderer.render_agent(agent, manifest, catalog)?;
     let operations = rendered
@@ -1815,6 +2075,10 @@ fn rollback_plan(
     Ok(RollbackReport {
         agent: command.agent.clone(),
         target,
+        env: command.env.clone(),
+        dry_run: command.dry_run,
+        deployment: command.deployment.clone(),
+        delegated_command,
         operations,
         blocked,
         reason,
@@ -2031,11 +2295,20 @@ fn rollback(command: RollbackCommand) -> Result<()> {
     if let Some(reason) = &report.reason {
         println!("{reason}");
     }
+    if !report.delegated_command.is_empty() {
+        println!("Delegated command: {}", report.delegated_command.join(" "));
+        if command.dry_run {
+            println!("Dry run only; Eve rollback was not invoked.");
+        }
+    }
 
     if blocked {
         bail!("rollback requires migration")
-    } else {
+    } else if report.delegated_command.is_empty() || command.dry_run {
         Ok(())
+    } else {
+        let agent_dir = PathBuf::from("agents").join(&command.agent);
+        run_process(&agent_dir, &report.delegated_command)
     }
 }
 
@@ -2455,7 +2728,7 @@ fn plan_generate_migration(command: &GenerateNamed) -> Result<Vec<PlannedChange>
 fn migration_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
+        .map(|duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
 
@@ -2830,12 +3103,9 @@ fn append_lock_entries(
 }
 
 fn component_digest(kind: &str, name: &str, version: &str) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in format!("{kind}:{name}:{version}").bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("fnv64:{hash:016x}")
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{kind}:{name}:{version}"));
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn file_matches(path: &Path, expected: &str) -> Result<bool> {
@@ -3014,7 +3284,81 @@ agents:
         let lockfile = render_versions_lock(&manifest.agents[0], &manifest, &valid_catalog());
 
         assert!(lockfile.contains("catalog/tools/search_customers@1.0.0"));
-        assert!(lockfile.contains("digest: fnv64:"));
+        assert!(lockfile.contains("digest: sha256:"));
+        assert_eq!(
+            component_digest("tools", "search_customers", "1.0.0"),
+            "sha256:1ea452a81b91deab5cd30d7a4980cae5d85c3a5a7dc3749fd6358a5bdbaa08b6"
+        );
+    }
+
+    #[test]
+    fn doctor_templates_flag_and_template_dir_option_parse() {
+        let template_check = Cli::try_parse_from(["eve-rails-cli", "doctor", "--templates"])
+            .expect("template check flag parses");
+        let template_dir = Cli::try_parse_from([
+            "eve-rails-cli",
+            "doctor",
+            "--template-dir",
+            "custom/templates",
+        ])
+        .expect("template directory option parses");
+
+        match template_check.command {
+            Command::Doctor(command) => {
+                assert!(command.templates);
+                assert_eq!(command.template_dir, PathBuf::from("templates/agent"));
+            }
+            _ => panic!("expected doctor command"),
+        }
+        match template_dir.command {
+            Command::Doctor(command) => {
+                assert!(!command.templates);
+                assert_eq!(command.template_dir, PathBuf::from("custom/templates"));
+            }
+            _ => panic!("expected doctor command"),
+        }
+    }
+
+    #[test]
+    fn documented_readme_commands_parse() {
+        let docs = [("README.md", include_str!("../README.md"))];
+
+        for (doc_name, source) in docs {
+            for command in documented_cli_commands(source) {
+                let argv = shell_words(&command);
+                if argv
+                    .iter()
+                    .any(|arg| arg.contains('<') || arg.contains('>'))
+                {
+                    continue;
+                }
+                match Cli::try_parse_from(&argv) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {}
+                    Err(error) if error.kind() == clap::error::ErrorKind::DisplayVersion => {}
+                    Err(error) => {
+                        panic!("{doc_name} command failed to parse: {command}\n{error}")
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stale_documented_flags_are_rejected_by_parser() {
+        assert!(Cli::try_parse_from(["eve-rails-cli", "doctor", "--check-templates",]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "eve-rails-cli",
+                "rollback",
+                "--agent",
+                "support",
+                "--to",
+                "1.0.0",
+                "--dry-run",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
@@ -3071,6 +3415,73 @@ agents:
     }
 
     #[test]
+    fn migration_timestamp_uses_subsecond_precision() {
+        let first = migration_timestamp();
+        let second = migration_timestamp();
+
+        assert!(second >= first);
+        assert!(first > 1_000_000_000_000_000_000);
+    }
+
+    #[test]
+    fn migration_scanner_includes_global_and_agent_migrations() {
+        let root = env::temp_dir().join(format!(
+            "eve-rails-cli-migrations-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let global = root.join("agents/migrations");
+        let agent = root.join("agents/billing/agent/migrations");
+        fs::create_dir_all(&global).expect("global migrations dir");
+        fs::create_dir_all(&agent).expect("agent migrations dir");
+        fs::write(global.join("001_global.ts"), "").expect("global migration");
+        fs::write(global.join("notes.md"), "").expect("ignored migration note");
+        fs::write(agent.join("002_agent.ts"), "").expect("agent migration");
+
+        let mut migrations = collect_migrations(&global).expect("global scan");
+        migrations.extend(collect_migrations(&agent).expect("agent scan"));
+        migrations.sort();
+
+        assert_eq!(migrations.len(), 2);
+        assert!(
+            migrations
+                .iter()
+                .any(|path| path.ends_with("001_global.ts"))
+        );
+        assert!(migrations.iter().any(|path| path.ends_with("002_agent.ts")));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn migration_ledger_round_trips_applied_status() {
+        let root = env::temp_dir().join(format!(
+            "eve-rails-cli-migration-ledger-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let ledger = root.join(".eve-rails/migrations/production.applied");
+        let mut applied = BTreeSet::new();
+        applied.insert("agents/migrations/001_global.ts".to_string());
+        applied.insert("agents/billing/agent/migrations/002_agent.ts".to_string());
+
+        write_applied_migrations(&ledger, &applied).expect("ledger writes");
+        let loaded = load_applied_migrations(&ledger).expect("ledger reads");
+
+        assert_eq!(loaded, applied);
+        assert_eq!(
+            migration_ledger_path("production"),
+            PathBuf::from(".eve-rails/migrations/production.applied")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn deploy_preflight_fails_when_doctor_gate_fails() {
         let mut manifest = valid_manifest();
         manifest.agents[0].approvals.clear();
@@ -3102,6 +3513,29 @@ agents:
     }
 
     #[test]
+    fn deploy_preflight_delegates_to_eve_deploy_from_agent_dir() {
+        let manifest = valid_manifest();
+        let report =
+            deploy_preflight(&deploy_command(false, false), &manifest, &valid_catalog()).unwrap();
+
+        assert_eq!(
+            report.delegated_command,
+            vec!["npm", "exec", "--", "eve", "deploy"]
+        );
+    }
+
+    #[test]
+    fn preview_command_uses_process_cwd_not_cd() {
+        let commands = runtime_commands(RuntimeKind::Preview);
+
+        assert_eq!(
+            commands,
+            vec![vec!["npm", "exec", "--", "eve", "dev", "--no-ui"]]
+        );
+        assert_ne!(commands[0][0], "cd");
+    }
+
+    #[test]
     fn rollback_restores_manifest_and_lockfile() {
         let manifest = valid_manifest();
         let report = rollback_plan(
@@ -3123,6 +3557,24 @@ agents:
                 .operations
                 .iter()
                 .any(|operation| operation.path.ends_with("versions.lock"))
+        );
+    }
+
+    #[test]
+    fn deployed_rollback_delegates_to_vercel_rollback() {
+        let manifest = valid_manifest();
+        let mut command = rollback_command(None, None);
+        command.deployment = Some("dep_123".to_string());
+        command.env = "production".to_string();
+        command.dry_run = true;
+        let report = rollback_plan(&command, &manifest, &valid_catalog()).expect("rollback");
+
+        assert_eq!(report.deployment.as_deref(), Some("dep_123"));
+        assert_eq!(
+            report.delegated_command,
+            vec![
+                "npm", "exec", "--", "vercel", "rollback", "dep_123", "--yes"
+            ]
         );
     }
 
@@ -3174,6 +3626,23 @@ agents:
         assert_eq!(format_components(&components), "search_customers@1.0.0");
     }
 
+    #[test]
+    fn effective_components_merge_shared_agent_and_overrides_stably() {
+        let shared = vec!["search_customers".to_string(), "prepare_refund".to_string()];
+        let mut agent_components = ComponentMap::new();
+        agent_components.insert("search_customers".to_string(), "1.2.0".to_string());
+        agent_components.insert("lookup_order".to_string(), "1.0.0".to_string());
+
+        assert_eq!(
+            effective_components(&shared, &agent_components),
+            vec![
+                ("search_customers".to_string(), "1.2.0".to_string()),
+                ("prepare_refund".to_string(), "catalog".to_string()),
+                ("lookup_order".to_string(), "1.0.0".to_string()),
+            ]
+        );
+    }
+
     fn deploy_command(require_doctor: bool, require_evals: bool) -> DeployCommand {
         DeployCommand {
             agent: Some("billing".to_string()),
@@ -3197,10 +3666,13 @@ agents:
         RollbackCommand {
             agent: "billing".to_string(),
             to: to.map(str::to_string),
+            deployment: None,
             component: component.map(str::to_string),
+            env: "staging".to_string(),
             manifest: PathBuf::from("manifests/agents.yml"),
             catalog: PathBuf::from("manifests/catalog.yml"),
             template_dir: PathBuf::from("templates/agent"),
+            dry_run: false,
             json: false,
         }
     }
@@ -3219,6 +3691,27 @@ agents:
                 .any(|error| error.contains("risky tool 'prepare_refund'")),
             "{:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn explicit_none_side_effects_warns_but_is_not_risky() {
+        let mut catalog = valid_catalog();
+        catalog
+            .tools
+            .get_mut("search_customers")
+            .expect("tool")
+            .side_effects = Some(SideEffects::None);
+        let report = validate_manifest(&valid_manifest(), &catalog);
+
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("tool 'search_customers' explicitly declares side_effects: none")
+        }));
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|error| error.contains("risky tool 'search_customers'"))
         );
     }
 
@@ -3281,6 +3774,12 @@ channels:
         );
         assert!(files.iter().any(|file| file.path.ends_with("agent.ts")
             && file.content.contains("model: \"openai/gpt-5.5\"")));
+        assert!(files.iter().any(|file| {
+            file.path.ends_with("agent.ts")
+                && !file.content.contains("tools:")
+                && !file.content.contains("skills:")
+                && !file.content.contains("channels:")
+        }));
         assert!(
             files
                 .iter()
@@ -3303,6 +3802,16 @@ channels:
         assert!(
             files
                 .iter()
+                .any(|file| file.path.ends_with("skills/handle_refund.md"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("channels/eve.ts"))
+        );
+        assert!(
+            files
+                .iter()
                 .any(|file| file.path.ends_with("memory/customer_profile.ts"))
         );
         assert!(
@@ -3310,6 +3819,108 @@ channels:
                 .iter()
                 .any(|file| file.path.ends_with("evals/standard.eval.ts"))
         );
+    }
+
+    #[test]
+    fn renderer_handles_agent_with_no_optional_runtime_components() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let manifest = manifest(
+            r#"
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+agents:
+  - name: simple
+    version: 1.0.0
+    responsibility: Keep runtime registration minimal.
+"#,
+        );
+        let catalog = CatalogManifest::default();
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &catalog)
+            .expect("agent renders");
+        let agent_ts = files
+            .iter()
+            .find(|file| file.path.ends_with("agent.ts"))
+            .expect("agent.ts");
+
+        assert!(!agent_ts.content.contains("tools:"));
+        assert!(!agent_ts.content.contains("skills:"));
+        assert!(!agent_ts.content.contains("channels:"));
+    }
+
+    #[test]
+    fn renderer_outputs_multiple_filesystem_runtime_components() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let mut manifest = valid_manifest();
+        manifest.agents[0]
+            .tools
+            .insert("lookup-order".to_string(), "1.0.0".to_string());
+        manifest.agents[0]
+            .skills
+            .insert("refund_policy".to_string(), "1.0.0".to_string());
+        manifest.agents[0]
+            .channels
+            .push("slack_support".to_string());
+        let mut catalog = valid_catalog();
+        catalog.tools.insert(
+            "lookup-order".to_string(),
+            CatalogComponent {
+                version: "1.0.0".to_string(),
+                ..CatalogComponent::default()
+            },
+        );
+        catalog.skills.insert(
+            "refund_policy".to_string(),
+            CatalogComponent {
+                version: "1.0.0".to_string(),
+                ..CatalogComponent::default()
+            },
+        );
+        catalog.channels.insert(
+            "slack_support".to_string(),
+            CatalogComponent {
+                version: "1.0.0".to_string(),
+                kind: Some("slack".to_string()),
+                connect_uid: Some("slack/support-agent".to_string()),
+                ..CatalogComponent::default()
+            },
+        );
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &catalog)
+            .expect("agent renders");
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("tools/lookup-order.ts"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("tools/search_customers.ts"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("skills/refund_policy.md"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("skills/handle_refund.md"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("channels/slack_support.ts"))
+        );
+        let agent_ts = files
+            .iter()
+            .find(|file| file.path.ends_with("agent.ts"))
+            .expect("agent.ts");
+        assert!(!agent_ts.content.contains("lookup-order"));
+        assert!(!agent_ts.content.contains("refund_policy"));
+        assert!(!agent_ts.content.contains("slack_support"));
     }
 
     #[test]
@@ -3636,6 +4247,132 @@ agents:
         );
     }
 
+    #[test]
+    fn doctor_fix_writes_generated_files_and_skips_unchanged() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].name = format!("doctor_fix_{}", unique_suffix());
+        let catalog = valid_catalog();
+        let mut command = doctor_command(true, false);
+        command.fix = true;
+
+        let first = apply_doctor_fixes(&manifest, &catalog, &command).expect("first fix");
+        let second = apply_doctor_fixes(&manifest, &catalog, &command).expect("second fix");
+        let agent_path = PathBuf::from("agents")
+            .join(&manifest.agents[0].name)
+            .join("agent")
+            .join("agent.ts");
+
+        assert!(first.iter().any(|operation| {
+            operation.path == agent_path && operation.action == BatchAction::Create
+        }));
+        assert!(
+            agent_path.exists(),
+            "doctor --fix should write generated agent files"
+        );
+        assert!(second.is_empty(), "unchanged files should not be rewritten");
+        let _ = fs::remove_dir_all(PathBuf::from("agents").join(&manifest.agents[0].name));
+    }
+
+    #[test]
+    fn update_apply_updates_allowed_versions() {
+        let dir = temp_dir("update-apply");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let manifest_path = dir.join("agents.yml");
+        let catalog_path = dir.join("catalog.yml");
+        fs::write(
+            &manifest_path,
+            r#"
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+agents:
+  - name: billing
+    version: 1.0.0
+    responsibility: Answer billing questions.
+    tools:
+      search_customers: 1.0.0
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            &catalog_path,
+            r#"
+tools:
+  search_customers:
+    version: 1.0.1
+"#,
+        )
+        .expect("catalog");
+        let manifest = load_manifest(&manifest_path).expect("manifest");
+        let catalog = load_catalog(&catalog_path).expect("catalog");
+        let reports = collect_version_reports(&manifest, &catalog, Some("billing"));
+        let mut command = update_command(&manifest_path, &catalog_path);
+        command.patch = true;
+
+        assert!(apply_updates(&manifest_path, &catalog_path, &reports, &command).expect("apply"));
+        let updated = fs::read_to_string(&manifest_path).expect("updated manifest");
+        assert!(updated.contains("search_customers: 1.0.1"), "{updated}");
+    }
+
+    #[test]
+    fn update_apply_reports_no_change_when_updates_are_not_allowed() {
+        let dir = temp_dir("update-no-change");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let manifest_path = dir.join("agents.yml");
+        let catalog_path = dir.join("catalog.yml");
+        fs::write(
+            &manifest_path,
+            "agents:\n- name: billing\n  version: 1.0.0\n  responsibility: Billing.\n  model: openai/gpt-5.5\n  owner: team\n  tools:\n    search_customers: 1.0.0\n",
+        )
+        .expect("manifest");
+        fs::write(
+            &catalog_path,
+            "tools:\n  search_customers:\n    version: 1.1.0\n",
+        )
+        .expect("catalog");
+        let reports = collect_version_reports(
+            &load_manifest(&manifest_path).expect("manifest"),
+            &load_catalog(&catalog_path).expect("catalog"),
+            Some("billing"),
+        );
+        let command = update_command(&manifest_path, &catalog_path);
+
+        assert!(
+            !apply_updates(&manifest_path, &catalog_path, &reports, &command).expect("no apply")
+        );
+    }
+
+    #[test]
+    fn update_apply_fails_when_manifest_entry_cannot_be_rewritten() {
+        let dir = temp_dir("update-failure");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let manifest_path = dir.join("agents.yml");
+        let catalog_path = dir.join("catalog.yml");
+        fs::write(
+            &manifest_path,
+            "agents:\n- name: billing\n  version: 1.0.0\n  responsibility: Billing.\n  model: openai/gpt-5.5\n  owner: team\n",
+        )
+        .expect("manifest");
+        fs::write(
+            &catalog_path,
+            "tools:\n  search_customers:\n    version: 1.0.1\n",
+        )
+        .expect("catalog");
+        let reports = vec![VersionReport {
+            agent: "billing".to_string(),
+            component_kind: "tool".to_string(),
+            component: "search_customers".to_string(),
+            requested: "1.0.0".to_string(),
+            resolved: Some("1.0.1".to_string()),
+            update: UpdateKind::Patch,
+            affected_evals: Vec::new(),
+        }];
+        let mut command = update_command(&manifest_path, &catalog_path);
+        command.patch = true;
+
+        assert!(apply_updates(&manifest_path, &catalog_path, &reports, &command).is_err());
+    }
+
     fn doctor_command(templates: bool, updates: bool) -> DoctorCommand {
         DoctorCommand {
             all: true,
@@ -3793,11 +4530,81 @@ agents:
         }
     }
 
+    fn update_command(manifest: &Path, catalog: &Path) -> UpdateCommand {
+        UpdateCommand {
+            agent: Some("billing".to_string()),
+            fleet: None,
+            manifest: manifest.to_path_buf(),
+            catalog: catalog.to_path_buf(),
+            json: false,
+            patch: false,
+            minor: false,
+            major: false,
+            plan: false,
+            apply: true,
+        }
+    }
+
+    fn documented_cli_commands(source: &str) -> Vec<String> {
+        let mut commands = Vec::new();
+        let mut current = String::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if current.is_empty() {
+                if !trimmed.starts_with("eve-rails-cli ") && trimmed != "eve-rails-cli --help" {
+                    continue;
+                }
+                current.push_str(trimmed.trim_end_matches('\\').trim_end());
+            } else {
+                current.push(' ');
+                current.push_str(trimmed.trim_end_matches('\\').trim_end());
+            }
+
+            if !trimmed.ends_with('\\') {
+                commands.push(current.clone());
+                current.clear();
+            }
+        }
+        commands
+    }
+
+    fn shell_words(command: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut current = String::new();
+        let mut quote = None;
+        let mut chars = command.chars().peekable();
+        while let Some(char) = chars.next() {
+            match (char, quote) {
+                ('\\', Some('"')) => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                }
+                ('\'' | '"', None) => quote = Some(char),
+                (value, Some(active_quote)) if value == active_quote => quote = None,
+                (' ' | '\t', None) => {
+                    if !current.is_empty() {
+                        words.push(std::mem::take(&mut current));
+                    }
+                }
+                (value, _) => current.push(value),
+            }
+        }
+        assert!(quote.is_none(), "unterminated quote in command: {command}");
+        if !current.is_empty() {
+            words.push(current);
+        }
+        words
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
+        std::env::temp_dir().join(format!("eve-rails-{name}-{}", unique_suffix()))
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
-            .as_nanos();
-        std::env::temp_dir().join(format!("eve-rails-{name}-{nanos}"))
+            .as_nanos()
     }
 }

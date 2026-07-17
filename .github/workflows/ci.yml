@@ -23,6 +23,17 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      - name: Install dependency policy tools
+        run: |
+          cargo install --locked cargo-audit@0.21.2
+          cargo install --locked cargo-deny@0.18.3
+
+      - name: Dependency vulnerabilities
+        run: cargo audit --deny warnings
+
+      - name: Dependency policy
+        run: cargo deny --locked check
+
       - name: Test
         run: cargo test --locked
 

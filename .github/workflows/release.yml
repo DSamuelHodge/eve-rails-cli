@@ -62,6 +62,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          expected=3
+          actual="$(find . -maxdepth 1 -type f -name 'eve-rails-cli-*' | wc -l | tr -d ' ')"
+          test "$actual" = "$expected"
+          sha256sum eve-rails-cli-* | sort -k2 > SHA256SUMS
+          test "$(wc -l < SHA256SUMS | tr -d ' ')" = "$expected"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
