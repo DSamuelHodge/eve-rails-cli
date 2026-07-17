@@ -17,7 +17,15 @@
 
 ## Why It Matters
 
-Agent teams need more than prompts in folders. They need repeatable defaults, reusable tools and skills, eval gates, approval policy, memory conventions, hot-load rules, rollback plans, and diagnostics that a human or coding agent can follow. Eve Rails CLI gives that backbone so many agents can be generated, reviewed, updated, and operated consistently.
+Engineering teams need more than prompts in folders. Eve Rails CLI gives a fleet
+the operational backbone around Eve:
+
+- fleet manifests for many agents, not one-off project folders;
+- reusable catalog tools, skills, evals, approvals, channels, and memory;
+- template rendering into Eve-compatible agent projects;
+- doctor checks for freshness, safety, approvals, budgets, and runtime config;
+- version, hot-load, migration, deploy, rollback, inspect, and graph workflows;
+- diagnostics that humans and coding agents can follow.
 
 ## Quick Start
 
