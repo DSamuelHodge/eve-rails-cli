@@ -24,9 +24,11 @@ jobs:
         run: cargo fmt --check
 
       - name: Install dependency policy tools
-        run: |
-          cargo install --locked cargo-audit@0.22.2
-          cargo install --locked cargo-deny@0.20.2
+        uses: taiki-e/install-action@v2
+        with:
+          tool: |
+            cargo-audit@0.22.2
+            cargo-deny@0.20.2
 
       - name: Dependency vulnerabilities
         run: cargo audit --deny warnings
