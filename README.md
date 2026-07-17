@@ -49,7 +49,7 @@ eve-rails-cli generate agent support \
 
 eve-rails-cli plan manifests/agents.yml
 eve-rails-cli apply manifests/agents.yml
-eve-rails-cli doctor --all --templates --updates
+eve-rails-cli doctor --all --check-templates --updates
 eve-rails-cli render --all --check
 ```
 

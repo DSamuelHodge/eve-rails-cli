@@ -586,6 +586,13 @@ pub(super) fn validate_manifest(
     if let Some(policy) = &manifest.defaults.approvals {
         validate_policy(&mut report, "defaults", policy, catalog);
     }
+    for (tool, component) in &catalog.tools {
+        if component.side_effects == Some(SideEffects::None) {
+            report.warnings.push(format!(
+                "tool '{tool}' explicitly declares side_effects: none; verify this is intentional"
+            ));
+        }
+    }
 
     for agent in &manifest.agents {
         if agent.name.trim().is_empty() {
