@@ -181,24 +181,6 @@ impl<'source> Renderer<'source> {
             owner => owner,
             responsibility => agent.responsibility.as_str(),
             model => model,
-            tools => runtime_imports(
-                &effective_components(&manifest.shared.tools, &agent.tools)
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>(),
-                "tool"
-            ),
-            skills => runtime_imports(
-                &effective_components(&manifest.shared.skills, &agent.skills)
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>(),
-                "skill"
-            ),
-            channels => runtime_imports(
-                &effective_string_list(&manifest.defaults.channels, &agent.channels),
-                "channel"
-            ),
         };
 
         let instructions = self
@@ -730,35 +712,6 @@ export default {{
 "#,
         escape_ts_string(name)
     )
-}
-
-fn runtime_imports(names: &[String], prefix: &str) -> Vec<BTreeMap<String, String>> {
-    names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| {
-            let mut item = BTreeMap::new();
-            item.insert("name".to_string(), name.clone());
-            item.insert("import_name".to_string(), format!("{prefix}{index}"));
-            item.insert("property_name".to_string(), ts_property_name(name));
-            item
-        })
-        .collect()
-}
-
-fn ts_property_name(name: &str) -> String {
-    if name
-        .chars()
-        .next()
-        .is_some_and(|char| char == '_' || char.is_ascii_alphabetic())
-        && name
-            .chars()
-            .all(|char| char == '_' || char == '$' || char.is_ascii_alphanumeric())
-    {
-        name.to_string()
-    } else {
-        format!("\"{}\"", escape_ts_string(name))
-    }
 }
 
 fn ts_config_value(value: &str) -> String {

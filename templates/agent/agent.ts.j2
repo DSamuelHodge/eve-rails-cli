@@ -1,35 +1,5 @@
 import { defineAgent } from "eve";
-{% for tool in agent.tools %}
-import * as {{ tool.import_name }} from "./tools/{{ tool.name }}";
-{% endfor %}
-{% for skill in agent.skills %}
-import {{ skill.import_name }} from "./skills/{{ skill.name }}.md";
-{% endfor %}
-{% for channel in agent.channels %}
-import {{ channel.import_name }} from "./channels/{{ channel.name }}";
-{% endfor %}
 
 export default defineAgent({
   model: "{{ agent.model }}",
-{% if agent.tools %}
-  tools: {
-{% for tool in agent.tools %}
-    {{ tool.property_name }}: {{ tool.import_name }},
-{% endfor %}
-  },
-{% endif %}
-{% if agent.skills %}
-  skills: [
-{% for skill in agent.skills %}
-    {{ skill.import_name }},
-{% endfor %}
-  ],
-{% endif %}
-{% if agent.channels %}
-  channels: [
-{% for channel in agent.channels %}
-    {{ channel.import_name }},
-{% endfor %}
-  ],
-{% endif %}
 });

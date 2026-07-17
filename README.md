@@ -21,39 +21,38 @@ Agent teams need more than prompts in folders. They need repeatable defaults, re
 
 ## Quick Start
 
+Build a small fleet from shared catalog components:
+
 ```sh
 git clone https://github.com/DSamuelHodge/eve-rails-cli.git
 cd eve-rails-cli
 cargo install --path .
 
-eve-rails-cli init my-fleet --template basic --model openai/gpt-5.5 --owner agent-platform --yes
-cd my-fleet
+eve-rails-cli init support-fleet --template basic --yes
+cd support-fleet
 
 eve-rails-cli generate tool search_customers --side-effects read
+eve-rails-cli generate tool prepare_refund --side-effects money
 eve-rails-cli generate skill triage_customer_issue
-eve-rails-cli generate channel eve
-eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
 eve-rails-cli generate eval standard
-eve-rails-cli generate memory customer_profile --retention 180d
 
 eve-rails-cli generate agent support \
   --with-tools search_customers \
   --with-skills triage_customer_issue \
-  --with-channels eve \
-  --with-schedules weekday_triage \
-  --with-evals standard \
-  --with-memory customer_profile \
-  --approval required \
-  --auth platform-oauth \
-  --visibility internal
+  --with-evals standard
 
-eve-rails-cli plan manifests/agents.yml
+eve-rails-cli generate agent billing \
+  --with-tools search_customers,prepare_refund \
+  --with-skills triage_customer_issue \
+  --with-evals standard \
+  --approval required
+
 eve-rails-cli apply manifests/agents.yml
-eve-rails-cli doctor --all --check-templates --updates
+eve-rails-cli doctor --all
 eve-rails-cli render --all --check
 ```
 
-Then verify the generated Eve agent:
+Then verify any generated Eve agent:
 
 ```sh
 cd agents/support
@@ -68,51 +67,26 @@ npm exec -- eve info --json
 - Node.js 24 or newer when testing generated Eve agents.
 - Optional Vercel AI Gateway credentials for live model calls.
 
-## YAML Shape
+## Fleet Model
 
-Single-agent project:
+Eve Rails CLI keeps fleet intent in YAML and renders one Eve project per agent:
 
-```yaml
-defaults:
-  model: openai/gpt-5.5
-  owner: support-platform
-  channels: [eve]
-  schedules: []
-  evals: [standard]
-
-agents:
-  - name: support
-    version: 1.0.0
-    responsibility: Resolve customer support requests.
-    tools:
-      search_customers: 1.0.0
-    skills:
-      triage_customer_issue: 1.0.0
-    memory:
-      customer_profile: 1.0.0
-    approvals:
-      search_customers: required
-    auth: platform-oauth
-    visibility: internal
+```text
+manifests/agents.yml   # fleet defaults and agent composition
+manifests/catalog.yml  # reusable tools, skills, evals, approvals, channels
+templates/agent/       # render templates
+agents/<name>/         # generated Eve projects
 ```
 
-Fleet project:
+The fleet manifest names the agents and what each one uses:
 
 ```yaml
 defaults:
   model: openai/gpt-5.5
   owner: agent-platform
-  channels: [eve]
-  schedules: [weekday_triage]
+  channels: []
+  schedules: []
   evals: [standard]
-
-shared:
-  tools:
-    search_customers: 1.0.0
-  skills:
-    triage_customer_issue: 1.0.0
-  memory:
-    customer_profile: 1.0.0
 
 agents:
   - name: support
@@ -137,7 +111,7 @@ agents:
       prepare_refund: required
 ```
 
-Catalog entries referenced by those manifests live in `manifests/catalog.yml`:
+The catalog defines reusable components once:
 
 ```yaml
 tools:
@@ -156,117 +130,22 @@ evals:
 approvals:
   required:
     version: 1.0.0
-memory:
-  customer_profile:
-    version: 1.0.0
-    retention: 180d
-channels:
-  eve:
-    version: 1.0.0
-  sms_support:
-    version: 1.0.0
-    kind: twilio
-    allow_from: env:TWILIO_ALLOWED_FROM
-    messaging_from: env:TWILIO_FROM_NUMBER
-  slack_support:
-    version: 1.0.0
-    kind: slack
-    connect_uid: slack/support-agent
-schedules:
-  weekday_triage:
-    version: 1.0.0
-    schedule: "0 9 * * 1-5"
 ```
 
-## Platform Channels
-
-Eve Rails CLI can generate common Eve platform channel files from catalog metadata. Agents reference the channel names, and render writes the matching `agent/channels/*.ts` files.
-
-```yaml
-agents:
-  - name: support
-    channels: [sms_support, slack_support, discord_support, telegram_support]
-
-channels:
-  sms_support:
-    version: 1.0.0
-    kind: twilio
-    allow_from: env:TWILIO_ALLOWED_FROM
-    messaging_from: env:TWILIO_FROM_NUMBER
-  slack_support:
-    version: 1.0.0
-    kind: slack
-    connect_uid: slack/support-agent
-  discord_support:
-    version: 1.0.0
-    kind: discord
-  telegram_support:
-    version: 1.0.0
-    kind: telegram
-    bot_username: support_bot
-```
-
-`doctor --env production` checks required channel configuration and runtime env vars, such as Twilio, Discord, Telegram, Teams, or Connect-backed channel settings.
+Tools, skills, evals, approvals, channels, schedules, memory, auth, and
+deployment metadata can all be generated and reused this way. Run
+`eve-rails-cli <command> --help` for the current options.
 
 ## Commands
 
-Step 1. Project setup and generation:
+Use `eve-rails-cli --help` for the command list and
+`eve-rails-cli <command> --help` for flags.
 
-```sh
-eve-rails-cli init my-fleet --template basic --dry-run
-eve-rails-cli generate agent support --dry-run
-eve-rails-cli generate tool search_customers --side-effects read
-eve-rails-cli generate channel sms_support --kind twilio --allow-from env:TWILIO_ALLOWED_FROM --messaging-from env:TWILIO_FROM_NUMBER
-eve-rails-cli generate channel slack_support --kind slack --connect-uid slack/support-agent
-eve-rails-cli generate schedule weekday_triage --schedule "0 9 * * 1-5"
-eve-rails-cli generate batch manifests/agents.yml --dry-run
-```
-
-Step 2. Planning, rendering, and inspection:
-
-```sh
-eve-rails-cli plan manifests/agents.yml
-eve-rails-cli apply manifests/agents.yml
-eve-rails-cli render --all --check
-eve-rails-cli inspect --agent support
-eve-rails-cli graph --all --format mermaid
-```
-
-Step 3. Safety and runtime checks:
-
-```sh
-eve-rails-cli doctor --all --env production --connections --budgets
-eve-rails-cli eval --agent support --dry-run
-eve-rails-cli test --agent support
-eve-rails-cli preview --agent support --dry-run
-```
-
-Step 4. Versioning, migrations, deploys, and rollback:
-
-```sh
-eve-rails-cli outdated manifests/agents.yml
-eve-rails-cli update --agent support --minor --plan
-eve-rails-cli hotload --agent support skill:triage_customer_issue@1.0.1
-eve-rails-cli migrate --agent support --env production --dry-run
-eve-rails-cli deploy --agent support --env staging --require-evals --require-doctor --dry-run
-eve-rails-cli rollback --agent support --to 1.0.0 --dry-run
-```
-
-## Coding Agent Skill
-
-This repository includes a self-contained [SKILL.md](SKILL.md) for coding agents. It explains Eve, Eve Rails CLI conventions, manifests, commands, safety checks, auth, migrations, hot-load, deploys, and completion criteria without requiring the agent to read the rest of the repository first.
-
-Copy this command into a coding agent environment to fetch the skill text:
-
-```sh
-curl -L https://raw.githubusercontent.com/DSamuelHodge/eve-rails-cli/main/SKILL.md
-```
-
-Or copy the raw skill URL:
-
-```text
-https://raw.githubusercontent.com/DSamuelHodge/eve-rails-cli/main/SKILL.md
-```
+- Create: `init`, `generate`
+- Render: `plan`, `apply`, `render`
+- Validate: `doctor`, `test`, `eval`, `preview`
+- Operate: `outdated`, `update`, `hotload`, `migrate`, `deploy`, `rollback`
+- Inspect: `inspect`, `graph`
 
 ## Eve Resources
 
