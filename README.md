@@ -156,4 +156,4 @@ Use `eve-rails-cli --help` for the command list and
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and the GitHub issue and pull request templates.
+Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) and the GitHub issue and pull request templates.

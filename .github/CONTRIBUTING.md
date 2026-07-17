@@ -47,7 +47,7 @@ Before opening a PR:
 
 - Run `cargo fmt --check`.
 - Run `cargo test`.
-- Update README, changelog, or public skill guidance when behavior changes.
+- Update README or public docs when behavior changes.
 - Add or update tests for CLI behavior.
 - Keep generated/runtime artifacts out of commits.
 
@@ -76,6 +76,5 @@ Document release process
 Release work should update:
 
 - `Cargo.toml` version when appropriate.
-- `CHANGELOG.md`.
 - README install instructions if packaging changes.
 - CI/release workflow files.

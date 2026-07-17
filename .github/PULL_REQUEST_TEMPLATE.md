@@ -15,7 +15,7 @@ Describe the change and why it matters.
 
 - [ ] `cargo fmt --check`
 - [ ] `cargo test`
-- [ ] README/CHANGELOG/public skill guidance updated if behavior changed
+- [ ] README or public docs updated if behavior changed
 - [ ] Generated smoke workflow considered if generated output changed
 - [ ] No local runtime artifacts committed
 

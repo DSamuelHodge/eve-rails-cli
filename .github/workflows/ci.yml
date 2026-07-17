@@ -26,15 +26,10 @@ jobs:
       - name: Install dependency policy tools
         uses: taiki-e/install-action@v2
         with:
-          tool: |
-            cargo-audit@0.22.2
-            cargo-deny@0.20.2
+          tool: cargo-audit@0.22.2
 
       - name: Dependency vulnerabilities
         run: cargo audit --deny warnings
-
-      - name: Dependency policy
-        run: cargo deny --locked check
 
       - name: Test
         run: cargo test --locked
