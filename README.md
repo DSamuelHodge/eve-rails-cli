@@ -4,9 +4,11 @@
   </a>
   <h1>Eve Rails CLI</h1>
 
-[![CI](https://github.com/DSamuelHodge/eve-rails-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/DSamuelHodge/eve-rails-cli/actions/workflows/ci.yml)
+[![CI/CD](https://github.com/DSamuelHodge/eve-rails-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/DSamuelHodge/eve-rails-cli/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](https://www.rust-lang.org/)
+[![Node](https://img.shields.io/badge/Node.js-24%2B-339933.svg)](https://nodejs.org/)
 [![Eve](https://img.shields.io/badge/Eve-0.24%2B-black.svg)](https://www.npmjs.com/package/eve)
 
 </div>
@@ -122,7 +124,7 @@ anything that moves money? See [Building a fleet](docs/fleet.md).
 ## Requirements
 
 - Rust 1.97 or newer. Install Rust with [rustup](https://rustup.rs/); many OS package managers ship older Rust versions that cannot compile Rust 2024 crates.
-- Node.js 24 or newer when testing generated Eve agents.
+- Node.js 24 or newer when testing generated Eve agents. The CI Eve smoke job uses Node 24 because the Vercel Eve framework requires the modern Node runtime.
 - Optional Vercel AI Gateway credentials for live model calls.
 
 ## Fleet Model
@@ -211,6 +213,10 @@ Use `eve-rails-cli --help` for the command list and
 - Eve documentation: [eve.dev/docs](https://eve.dev/docs)
 - Eve package: [npmjs.com/package/eve](https://www.npmjs.com/package/eve)
 - Eve community: [GitHub Discussions](https://github.com/vercel/eve/discussions)
+
+## License
+
+Eve Rails CLI is available under the [MIT License](LICENSE). MIT is permissive and allows private use, modification, distribution, sublicensing, and commercial use when the license notice is preserved.
 
 ## Contributing
 
