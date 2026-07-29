@@ -2,12 +2,20 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 export default defineTool({
-  description: "{{ tool.description }}",
+  description: {{ tool.description_literal }},
   inputSchema: z.object({}),
   async execute() {
     return {
       status: "not_implemented",
-      tool: "{{ tool.name }}",
+      tool: {{ tool.name_literal }},
+      contract: {
+        sideEffects: {{ tool.side_effects_literal }},
+        requiredApprovals: {{ tool.required_approvals_literal }},
+        requiredEnv: {{ tool.required_env_literal }},
+        requiredConnectors: {{ tool.required_connectors_literal }},
+        sandboxCompatibility: {{ tool.sandbox_compatibility_literal }},
+        failureModes: {{ tool.failure_modes_literal }},
+      },
     };
   },
 });

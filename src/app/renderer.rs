@@ -181,6 +181,9 @@ impl<'source> Renderer<'source> {
             owner => owner,
             responsibility => agent.responsibility.as_str(),
             model => model,
+            topology => agent.x_topology.clone().unwrap_or_default(),
+            runtime_policy => agent.x_runtime_policy.clone().unwrap_or_default(),
+            subagents => subagent_names(agent),
         };
 
         let instructions = self
@@ -275,14 +278,24 @@ impl<'source> Renderer<'source> {
         }
 
         for (tool, version) in effective_components(&manifest.shared.tools, &agent.tools) {
+            let component = catalog.tools.get(&tool);
+            let description = component
+                .map(|component| tool_description(&tool, component))
+                .unwrap_or_else(|| format!("{tool} generated tool contract."));
+            let side_effects = component
+                .and_then(|component| component.side_effects.as_ref())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "read".to_string());
             let tool_context = context! {
-                name => tool.as_str(),
-                version => version.as_str(),
-                description => catalog
-                    .tools
-                    .get(&tool)
-                    .map(|component| tool_description(&tool, component))
-                    .unwrap_or_else(|| format!("{tool} generated tool contract.")),
+                name_literal => ts_string_literal(&tool),
+                version_literal => ts_string_literal(&version),
+                description_literal => ts_string_literal(&format!("{description} Side effects: {side_effects}.")),
+                side_effects_literal => ts_string_literal(&side_effects),
+                required_approvals_literal => ts_string_array_literal(component.map(|component| component.required_approvals.as_slice()).unwrap_or(&[])),
+                required_env_literal => ts_string_array_literal(component.map(|component| component.required_env.as_slice()).unwrap_or(&[])),
+                required_connectors_literal => ts_string_array_literal(component.map(|component| component.required_connectors.as_slice()).unwrap_or(&[])),
+                sandbox_compatibility_literal => ts_string_array_literal(component.map(|component| component.sandbox_compatibility.as_slice()).unwrap_or(&[])),
+                failure_modes_literal => ts_string_array_literal(component.map(|component| component.failure_modes.as_slice()).unwrap_or(&[])),
             };
             let tool_ts = self
                 .env
@@ -321,19 +334,27 @@ impl<'source> Renderer<'source> {
         }
 
         for subagent in &agent.subagents {
+            let role = subagent_role(agent, subagent);
+            let subagent_name = subagent.name.as_str();
+            let subagent_model = subagent.model.as_deref().unwrap_or(model);
             files.push(RenderedFile {
                 path: output_root
                     .join("subagents")
-                    .join(subagent)
+                    .join(subagent_name)
                     .join("instructions.md"),
-                content: render_subagent_placeholder(&agent.name, subagent),
+                content: render_subagent_placeholder(&agent.name, subagent, role.as_ref()),
             });
             files.push(RenderedFile {
                 path: output_root
                     .join("subagents")
-                    .join(subagent)
+                    .join(subagent_name)
                     .join("agent.ts"),
-                content: render_subagent_agent_ts(&agent.name, subagent, model),
+                content: render_subagent_agent_ts(
+                    &agent.name,
+                    subagent,
+                    subagent_model,
+                    role.as_ref(),
+                ),
             });
         }
 
@@ -745,30 +766,123 @@ export default defineEvalConfig({});
 }
 
 pub(super) fn tool_description(tool: &str, component: &CatalogComponent) -> String {
-    match &component.side_effects {
-        Some(side_effects) => format!("Generated {tool} {side_effects} tool contract."),
-        None => format!("Generated {tool} tool contract."),
-    }
+    component
+        .description
+        .clone()
+        .unwrap_or_else(|| match &component.side_effects {
+            Some(side_effects) => format!("Generated {tool} {side_effects} tool contract."),
+            None => format!("Generated {tool} tool contract."),
+        })
 }
 
-pub(super) fn render_subagent_placeholder(agent: &str, subagent: &str) -> String {
+pub(super) fn subagent_names(agent: &AgentManifest) -> Vec<String> {
+    agent
+        .subagents
+        .iter()
+        .map(|subagent| subagent.name.clone())
+        .collect()
+}
+
+pub(super) fn subagent_role(
+    agent: &AgentManifest,
+    subagent: &SubagentManifest,
+) -> Option<RoleTopology> {
+    if subagent.title.is_some()
+        || subagent.role_id.is_some()
+        || subagent.responsibility.is_some()
+        || subagent.runtime_policy.is_some()
+    {
+        return Some(RoleTopology {
+            name: subagent.name.clone(),
+            title: subagent
+                .title
+                .clone()
+                .unwrap_or_else(|| subagent.name.clone()),
+            role_id: subagent
+                .role_id
+                .clone()
+                .unwrap_or_else(|| format!("subagent:{}", subagent.name)),
+            responsibility: subagent.responsibility.clone().unwrap_or_else(|| {
+                "Execute delegated work within this subagent's bounded context.".to_string()
+            }),
+            runtime_policy: subagent.runtime_policy.clone(),
+        });
+    }
+    let topology = agent.x_topology.as_ref()?;
+    topology
+        .principals
+        .iter()
+        .chain(topology.delegates.iter())
+        .find(|role| role.name == subagent.name)
+        .cloned()
+}
+
+pub(super) fn render_subagent_placeholder(
+    agent: &str,
+    subagent: &SubagentManifest,
+    role: Option<&RoleTopology>,
+) -> String {
+    let subagent_name = subagent.name.as_str();
+    let title = role
+        .map(|role| role.title.as_str())
+        .unwrap_or(subagent_name);
+    let role_id = role
+        .map(|role| role.role_id.as_str())
+        .unwrap_or("<unknown>");
+    let responsibility = role
+        .map(|role| role.responsibility.as_str())
+        .unwrap_or("Execute delegated work within this subagent's bounded context.");
+    let policy = role.and_then(|role| role.runtime_policy.as_ref());
+    let sandbox = policy
+        .and_then(|policy| policy.sandbox.as_deref())
+        .unwrap_or("read-only");
+    let allowed_tools = policy
+        .map(|policy| policy.allowed_tools.as_slice())
+        .unwrap_or(&[]);
+    let approvals = policy
+        .map(|policy| policy.approvals.as_slice())
+        .unwrap_or(&[]);
+    let forbidden_actions = policy
+        .map(|policy| policy.forbidden_actions.as_slice())
+        .unwrap_or(&[]);
+
     with_generated_header(
         CommentStyle::Hash,
         agent,
         "subagent-placeholder",
         &format!(
-            "# {subagent}\n\nThis subagent folder is generated as an Eve Rails convention placeholder.\n"
+            "# {title}\n\n## Role\n\n- Slug: `{subagent_name}`\n- Role id: `{role_id}`\n- Parent agent: `{agent}`\n\n## Responsibility\n\n{responsibility}\n\n## Runtime Boundary\n\n- Sandbox: `{sandbox}`\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n\n## Operating Rules\n\n- Accept delegated work only when it fits this role boundary.\n- Return concise findings, artifacts, decisions, and open risks to the parent agent.\n- Ask the parent agent to escalate when the task requires approval, credentials, production impact, legal judgment, security judgment, or customer-facing commitments.\n- Keep local assumptions explicit so the parent agent can review or re-delegate.\n",
+            markdown_list("Allowed tools", allowed_tools),
+            markdown_list("Approval gates", approvals),
+            markdown_list("Forbidden actions", forbidden_actions),
+            markdown_list("Declared tools", &subagent.tools),
+            markdown_list("Declared skills", &subagent.skills),
+            markdown_list("Declared memory", &subagent.memory),
+            markdown_list("Declared channels", &subagent.channels)
         ),
     )
 }
 
-pub(super) fn render_subagent_agent_ts(agent: &str, subagent: &str, model: &str) -> String {
+pub(super) fn render_subagent_agent_ts(
+    agent: &str,
+    subagent: &SubagentManifest,
+    model: &str,
+    role: Option<&RoleTopology>,
+) -> String {
+    let title = role
+        .map(|role| role.title.as_str())
+        .unwrap_or(subagent.name.as_str());
+    let responsibility = role
+        .map(|role| role.responsibility.as_str())
+        .unwrap_or("Generated role-aware subagent skeleton.");
     with_generated_header(
         CommentStyle::Slash,
         agent,
         "subagent-agent",
         &format!(
-            "import {{ defineAgent }} from \"eve\";\n\nexport default defineAgent({{\n  description: \"Generated {subagent} subagent skeleton.\",\n  model: \"{}\",\n}});\n",
+            "import {{ defineAgent }} from \"eve\";\n\nexport default defineAgent({{\n  description: \"{}: {}\",\n  model: \"{}\",\n}});\n",
+            escape_ts_string(title),
+            escape_ts_string(responsibility),
             escape_ts_string(model)
         ),
     )
@@ -789,6 +903,97 @@ pub(super) fn escape_json(value: &str) -> String {
 
 pub(super) fn escape_ts_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+pub(super) fn markdown_list(label: &str, values: &[String]) -> String {
+    if values.is_empty() {
+        return format!("- {label}: none");
+    }
+    format!("- {label}: {}", values.join(", "))
+}
+
+pub(super) fn ts_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("string literal serializes")
+}
+
+pub(super) fn ts_string_array_literal(values: &[String]) -> String {
+    serde_json::to_string(values).expect("string array literal serializes")
+}
+
+fn append_subagent_manifest_entries(output: &mut String, subagents: &[SubagentManifest]) {
+    output.push_str("subagents:");
+    if subagents.is_empty() {
+        output.push_str(" []\n");
+        return;
+    }
+    output.push('\n');
+    for subagent in subagents {
+        output.push_str(&format!("  - name: {}\n", subagent.name));
+        append_indented_optional_string(output, 4, "title", subagent.title.as_deref());
+        append_indented_optional_string(output, 4, "role_id", subagent.role_id.as_deref());
+        append_indented_optional_string(
+            output,
+            4,
+            "responsibility",
+            subagent.responsibility.as_deref(),
+        );
+        append_indented_optional_string(output, 4, "model", subagent.model.as_deref());
+        append_indented_string_list(output, 4, "tools", &subagent.tools);
+        append_indented_string_list(output, 4, "skills", &subagent.skills);
+        append_indented_string_list(output, 4, "memory", &subagent.memory);
+        append_indented_string_list(output, 4, "channels", &subagent.channels);
+        if !subagent.approvals.is_empty() {
+            output.push_str("    approvals:\n");
+            for (tool, approval) in &subagent.approvals {
+                output.push_str(&format!("      {tool}: {approval}\n"));
+            }
+        }
+        if let Some(policy) = &subagent.runtime_policy {
+            append_yaml_value_at_indent(output, 4, "runtime_policy", policy);
+        }
+    }
+}
+
+fn append_yaml_value<T: Serialize>(output: &mut String, label: &str, value: &T) {
+    append_yaml_value_at_indent(output, 0, label, value);
+}
+
+fn append_yaml_value_at_indent<T: Serialize>(
+    output: &mut String,
+    indent: usize,
+    label: &str,
+    value: &T,
+) {
+    let yaml = serde_yaml::to_string(value).expect("generated metadata serializes");
+    let padding = " ".repeat(indent);
+    output.push_str(&format!("{padding}{label}:\n"));
+    for line in yaml.lines().filter(|line| line.trim() != "---") {
+        output.push_str(&padding);
+        output.push_str("  ");
+        output.push_str(line);
+        output.push('\n');
+    }
+}
+
+fn append_indented_optional_string(
+    output: &mut String,
+    indent: usize,
+    label: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        output.push_str(&format!("{}{label}: {value:?}\n", " ".repeat(indent)));
+    }
+}
+
+fn append_indented_string_list(output: &mut String, indent: usize, label: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    output.push_str(&format!("{}{label}:\n", " ".repeat(indent)));
+    for value in values {
+        output.push_str(&format!("{}- {value}\n", " ".repeat(indent + 2)));
+    }
 }
 
 pub(super) enum CommentStyle {
@@ -859,6 +1064,7 @@ pub(super) fn render_agent_manifest(agent: &AgentManifest, manifest: &FleetManif
     append_string_list(&mut output, "channels", &channels);
     append_string_list(&mut output, "schedules", &schedules);
     append_string_list(&mut output, "evals", &evals);
+    append_subagent_manifest_entries(&mut output, &agent.subagents);
     append_optional_string(&mut output, "risk", agent.risk.as_deref());
     append_optional_string(&mut output, "auth", agent.auth.as_deref());
     append_optional_string(&mut output, "visibility", agent.visibility.as_deref());
@@ -869,6 +1075,12 @@ pub(super) fn render_agent_manifest(agent: &AgentManifest, manifest: &FleetManif
         output.push_str(&format!("token_budget: {token_budget}\n"));
     }
     append_optional_string(&mut output, "timeout", agent.timeout.as_deref());
+    if let Some(policy) = &agent.x_runtime_policy {
+        append_yaml_value(&mut output, "runtime_policy", policy);
+    }
+    if let Some(topology) = &agent.x_topology {
+        append_yaml_value(&mut output, "topology", topology);
+    }
     output.push_str("runtime: eve@0.24.4\n");
     output.push_str("compatibility:\n");
     output.push_str("  hot_load: true\n");
@@ -915,6 +1127,13 @@ pub(super) fn render_versions_lock(
         let digest = component_digest("evals", eval, version);
         output.push_str(&format!(
             "  catalog/evals/{eval}@{version}:\n    source: manifests/catalog.yml\n    digest: {digest}\n"
+        ));
+    }
+    for subagent in &agent.subagents {
+        let digest = component_digest("subagents", &subagent.name, "manifest");
+        output.push_str(&format!(
+            "  manifest/subagents/{}@manifest:\n    source: manifests/agents.yml\n    digest: {digest}\n",
+            subagent.name
         ));
     }
     output

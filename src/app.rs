@@ -30,6 +30,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Create a Rails-style Eve Rails project skeleton.
     Init(InitCommand),
@@ -641,6 +642,10 @@ struct GraphCommand {
     #[arg(long, default_value = "text")]
     format: GraphFormat,
 
+    /// Graph concern to show.
+    #[arg(long, default_value = "all")]
+    mode: GraphMode,
+
     /// Path to the fleet manifest.
     #[arg(long, default_value = "manifests/agents.yml")]
     manifest: PathBuf,
@@ -659,6 +664,16 @@ enum GraphFormat {
     Text,
     Mermaid,
     Json,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum GraphMode {
+    All,
+    Topology,
+    Tools,
+    Approvals,
+    Runtime,
+    Channels,
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,8 +747,8 @@ struct AgentManifest {
     tools: ComponentMap,
     #[serde(default)]
     skills: ComponentMap,
-    #[serde(default)]
-    subagents: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_subagents")]
+    subagents: Vec<SubagentManifest>,
     #[serde(default)]
     channels: Vec<String>,
     #[serde(default)]
@@ -750,9 +765,90 @@ struct AgentManifest {
     cost_budget: Option<f64>,
     token_budget: Option<u64>,
     timeout: Option<String>,
+    #[serde(default)]
+    x_topology: Option<AgentTopology>,
+    #[serde(default)]
+    x_runtime_policy: Option<RuntimePolicy>,
 }
 
 type ComponentMap = BTreeMap<String, String>;
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct AgentTopology {
+    department: Option<String>,
+    #[serde(default)]
+    parent_agent: bool,
+    #[serde(default)]
+    principals: Vec<RoleTopology>,
+    #[serde(default)]
+    delegates: Vec<RoleTopology>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RoleTopology {
+    name: String,
+    title: String,
+    role_id: String,
+    responsibility: String,
+    #[serde(default)]
+    runtime_policy: Option<RuntimePolicy>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct RuntimePolicy {
+    sandbox: Option<String>,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
+    #[serde(default)]
+    approvals: Vec<String>,
+    #[serde(default)]
+    forbidden_actions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct SubagentManifest {
+    name: String,
+    title: Option<String>,
+    role_id: Option<String>,
+    responsibility: Option<String>,
+    model: Option<String>,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default)]
+    memory: Vec<String>,
+    #[serde(default)]
+    channels: Vec<String>,
+    #[serde(default)]
+    approvals: BTreeMap<String, String>,
+    #[serde(default)]
+    runtime_policy: Option<RuntimePolicy>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SubagentEntry {
+    Name(String),
+    Object(Box<SubagentManifest>),
+}
+
+fn deserialize_subagents<'de, D>(deserializer: D) -> Result<Vec<SubagentManifest>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries = Vec::<SubagentEntry>::deserialize(deserializer)?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| match entry {
+            SubagentEntry::Name(name) => SubagentManifest {
+                name,
+                ..SubagentManifest::default()
+            },
+            SubagentEntry::Object(subagent) => *subagent,
+        })
+        .collect())
+}
 
 #[derive(Debug, Default, Deserialize)]
 struct CatalogManifest {
@@ -775,8 +871,19 @@ struct CatalogManifest {
 #[derive(Debug, Default, Deserialize)]
 struct CatalogComponent {
     version: String,
+    description: Option<String>,
     kind: Option<String>,
     side_effects: Option<SideEffects>,
+    #[serde(default)]
+    required_approvals: Vec<String>,
+    #[serde(default)]
+    required_env: Vec<String>,
+    #[serde(default)]
+    required_connectors: Vec<String>,
+    #[serde(default)]
+    sandbox_compatibility: Vec<String>,
+    #[serde(default)]
+    failure_modes: Vec<String>,
     retention: Option<String>,
     schedule: Option<String>,
     allow_from: Option<String>,
@@ -825,7 +932,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 enum SideEffects {
     None,
@@ -1140,7 +1247,7 @@ fn init_changes(command: &InitCommand, root: &Path) -> Vec<PlannedChange> {
         PlannedChange {
             path: root.join("manifests").join("environments.yml"),
             action: change_action(&root.join("manifests").join("environments.yml")),
-            content: "environments:\n  development:\n    observability: false\n  production:\n    observability: true\n    required_env: []\n    required_secrets: []\n    required_connections: []\n".to_string(),
+            content: "environments:\n  development:\n    observability: false\n  staging:\n    observability: true\n    required_env: []\n    required_secrets: []\n    required_connections: []\n  production:\n    observability: true\n    required_env: []\n    required_secrets: []\n    required_connections: []\n".to_string(),
         },
     ];
     for (name, content) in [
@@ -1535,7 +1642,7 @@ fn update(command: UpdateCommand) -> Result<()> {
     println!("Update plan for {}", manifest_path.display());
     print_version_reports(&updates);
     if command.apply {
-        let changed = apply_updates(&manifest_path, &command.catalog, &updates, &command)?;
+        let changed = apply_updates(manifest_path, &command.catalog, &updates, &command)?;
         if changed {
             println!("Updated {}", manifest_path.display());
         } else {
@@ -2094,17 +2201,33 @@ struct AgentSummary {
     responsibility: String,
     tools: ComponentSummary,
     skills: ComponentSummary,
-    subagents: Vec<String>,
+    subagents: Vec<SubagentSummary>,
     channels: Vec<String>,
     schedules: Vec<String>,
     approvals: BTreeMap<String, String>,
     evals: Vec<String>,
     memory: ComponentSummary,
+    runtime_policy: RuntimePolicy,
     generated: GeneratedSummary,
     deployment: DeploymentSummary,
 }
 
 type ComponentSummary = BTreeMap<String, String>;
+
+#[derive(Debug, Serialize)]
+struct SubagentSummary {
+    name: String,
+    title: Option<String>,
+    role_id: Option<String>,
+    responsibility: Option<String>,
+    model: Option<String>,
+    tools: Vec<String>,
+    skills: Vec<String>,
+    memory: Vec<String>,
+    channels: Vec<String>,
+    approvals: BTreeMap<String, String>,
+    runtime_policy: RuntimePolicy,
+}
 
 #[derive(Debug, Serialize)]
 struct GeneratedSummary {
@@ -2158,7 +2281,11 @@ fn summarize_agent(
         responsibility: agent.responsibility.clone(),
         tools: resolved_component_summary(&agent.tools, &catalog.tools),
         skills: resolved_component_summary(&agent.skills, &catalog.skills),
-        subagents: agent.subagents.clone(),
+        subagents: agent
+            .subagents
+            .iter()
+            .map(|subagent| summarize_subagent(agent, subagent))
+            .collect(),
         channels: manifest
             .defaults
             .channels
@@ -2170,12 +2297,43 @@ fn summarize_agent(
         approvals: agent.approvals.clone(),
         evals: effective_evals(agent, manifest),
         memory: resolved_component_summary(&agent.memory, &catalog.memory),
+        runtime_policy: agent.x_runtime_policy.clone().unwrap_or_default(),
         generated,
         deployment: DeploymentSummary {
             doctor_passed,
             deployable: doctor_passed && !effective_evals(agent, manifest).is_empty(),
         },
     })
+}
+
+fn summarize_subagent(agent: &AgentManifest, subagent: &SubagentManifest) -> SubagentSummary {
+    let role = subagent_role(agent, subagent);
+    SubagentSummary {
+        name: subagent.name.clone(),
+        title: subagent
+            .title
+            .clone()
+            .or_else(|| role.as_ref().map(|role| role.title.clone())),
+        role_id: subagent
+            .role_id
+            .clone()
+            .or_else(|| role.as_ref().map(|role| role.role_id.clone())),
+        responsibility: subagent
+            .responsibility
+            .clone()
+            .or_else(|| role.as_ref().map(|role| role.responsibility.clone())),
+        model: subagent.model.clone(),
+        tools: subagent.tools.clone(),
+        skills: subagent.skills.clone(),
+        memory: subagent.memory.clone(),
+        channels: subagent.channels.clone(),
+        approvals: subagent.approvals.clone(),
+        runtime_policy: subagent
+            .runtime_policy
+            .clone()
+            .or_else(|| role.and_then(|role| role.runtime_policy))
+            .unwrap_or_default(),
+    }
 }
 
 fn generated_summary(
@@ -2221,6 +2379,14 @@ fn format_components(components: &ComponentSummary) -> String {
         .map(|(name, version)| format!("{name}@{version}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn format_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "<none>".to_string()
+    } else {
+        values.join(", ")
+    }
 }
 
 fn deploy(command: DeployCommand) -> Result<()> {
@@ -2342,7 +2508,37 @@ fn inspect(command: AgentCommand) -> Result<()> {
     println!("  responsibility: {}", summary.responsibility);
     println!("  tools: {}", format_components(&summary.tools));
     println!("  skills: {}", format_components(&summary.skills));
-    println!("  subagents: {}", summary.subagents.join(", "));
+    println!(
+        "  runtime sandbox: {}",
+        summary
+            .runtime_policy
+            .sandbox
+            .as_deref()
+            .unwrap_or("<unspecified>")
+    );
+    println!(
+        "  runtime allowed tools: {}",
+        format_list(&summary.runtime_policy.allowed_tools)
+    );
+    println!("  subagents:");
+    for subagent in &summary.subagents {
+        println!(
+            "    - {} ({})",
+            subagent.name,
+            subagent.title.as_deref().unwrap_or("untitled role")
+        );
+        println!(
+            "      sandbox: {}",
+            subagent
+                .runtime_policy
+                .sandbox
+                .as_deref()
+                .unwrap_or("<unspecified>")
+        );
+        if let Some(responsibility) = &subagent.responsibility {
+            println!("      responsibility: {responsibility}");
+        }
+    }
     println!("  channels: {}", summary.channels.join(", "));
     println!("  schedules: {}", summary.schedules.join(", "));
     println!("  approvals: {}", summary.approvals.len());
@@ -2381,26 +2577,56 @@ fn graph(command: GraphCommand) -> Result<()> {
         GraphFormat::Text => {
             for summary in &summaries {
                 println!("{}", summary.name);
-                for subagent in &summary.subagents {
-                    println!("  -> subagent/{subagent}");
+                if matches!(
+                    command.mode,
+                    GraphMode::All | GraphMode::Topology | GraphMode::Runtime
+                ) {
+                    for subagent in &summary.subagents {
+                        println!("  -> subagent/{}", subagent.name);
+                        if matches!(command.mode, GraphMode::All | GraphMode::Runtime) {
+                            println!(
+                                "     runtime sandbox: {}",
+                                subagent
+                                    .runtime_policy
+                                    .sandbox
+                                    .as_deref()
+                                    .unwrap_or("<unspecified>")
+                            );
+                        }
+                    }
                 }
-                for (tool, version) in &summary.tools {
-                    println!("  -> tools/{tool}@{version}");
+                if matches!(command.mode, GraphMode::All | GraphMode::Tools) {
+                    for (tool, version) in &summary.tools {
+                        println!("  -> tools/{tool}@{version}");
+                    }
                 }
-                for (skill, version) in &summary.skills {
-                    println!("  -> skills/{skill}@{version}");
+                if matches!(command.mode, GraphMode::All | GraphMode::Topology) {
+                    for (skill, version) in &summary.skills {
+                        println!("  -> skills/{skill}@{version}");
+                    }
                 }
-                for channel in &summary.channels {
-                    println!("  -> channels/{channel}");
+                if matches!(command.mode, GraphMode::All | GraphMode::Channels) {
+                    for channel in &summary.channels {
+                        println!("  -> channels/{channel}");
+                    }
                 }
-                for schedule in &summary.schedules {
-                    println!("  -> schedules/{schedule}");
+                if matches!(command.mode, GraphMode::All | GraphMode::Topology) {
+                    for schedule in &summary.schedules {
+                        println!("  -> schedules/{schedule}");
+                    }
                 }
-                for eval in &summary.evals {
-                    println!("  -> evals/{eval}");
+                if matches!(command.mode, GraphMode::All | GraphMode::Approvals) {
+                    for (tool, approval) in &summary.approvals {
+                        println!("  -> approvals/{tool}:{approval}");
+                    }
                 }
-                for (memory, version) in &summary.memory {
-                    println!("  -> memory/{memory}@{version}");
+                if matches!(command.mode, GraphMode::All) {
+                    for eval in &summary.evals {
+                        println!("  -> evals/{eval}");
+                    }
+                    for (memory, version) in &summary.memory {
+                        println!("  -> memory/{memory}@{version}");
+                    }
                 }
             }
         }
@@ -2409,58 +2635,159 @@ fn graph(command: GraphCommand) -> Result<()> {
             for summary in &summaries {
                 let agent_node = format!("agent_{}", node(&summary.name));
                 println!("  {agent_node}[\"agent:{}\"]", summary.name);
-                for subagent in &summary.subagents {
-                    println!("  {agent_node} --> subagent_{}", node(subagent));
+                if matches!(
+                    command.mode,
+                    GraphMode::All | GraphMode::Topology | GraphMode::Runtime
+                ) {
+                    for subagent in &summary.subagents {
+                        println!(
+                            "  {agent_node} --> subagent_{}[\"subagent:{}\"]",
+                            node(&subagent.name),
+                            subagent.name
+                        );
+                        if matches!(command.mode, GraphMode::All | GraphMode::Runtime) {
+                            println!(
+                                "  subagent_{} --> sandbox_{}[\"sandbox:{}\"]",
+                                node(&subagent.name),
+                                node(
+                                    subagent
+                                        .runtime_policy
+                                        .sandbox
+                                        .as_deref()
+                                        .unwrap_or("unspecified")
+                                ),
+                                subagent
+                                    .runtime_policy
+                                    .sandbox
+                                    .as_deref()
+                                    .unwrap_or("unspecified")
+                            );
+                        }
+                    }
                 }
-                for (tool, version) in &summary.tools {
-                    println!(
-                        "  {agent_node} --> tool_{}[\"tool:{}@{}\"]",
-                        node(tool),
-                        tool,
-                        version
-                    );
+                if matches!(command.mode, GraphMode::All | GraphMode::Tools) {
+                    for (tool, version) in &summary.tools {
+                        println!(
+                            "  {agent_node} --> tool_{}[\"tool:{}@{}\"]",
+                            node(tool),
+                            tool,
+                            version
+                        );
+                    }
                 }
-                for (skill, version) in &summary.skills {
-                    println!(
-                        "  {agent_node} --> skill_{}[\"skill:{}@{}\"]",
-                        node(skill),
-                        skill,
-                        version
-                    );
+                if matches!(command.mode, GraphMode::All | GraphMode::Topology) {
+                    for (skill, version) in &summary.skills {
+                        println!(
+                            "  {agent_node} --> skill_{}[\"skill:{}@{}\"]",
+                            node(skill),
+                            skill,
+                            version
+                        );
+                    }
                 }
-                for channel in &summary.channels {
-                    println!(
-                        "  {agent_node} --> channel_{}[\"channel:{}\"]",
-                        node(channel),
-                        channel
-                    );
+                if matches!(command.mode, GraphMode::All | GraphMode::Channels) {
+                    for channel in &summary.channels {
+                        println!(
+                            "  {agent_node} --> channel_{}[\"channel:{}\"]",
+                            node(channel),
+                            channel
+                        );
+                    }
                 }
-                for schedule in &summary.schedules {
-                    println!(
-                        "  {agent_node} --> schedule_{}[\"schedule:{}\"]",
-                        node(schedule),
-                        schedule
-                    );
+                if matches!(command.mode, GraphMode::All | GraphMode::Topology) {
+                    for schedule in &summary.schedules {
+                        println!(
+                            "  {agent_node} --> schedule_{}[\"schedule:{}\"]",
+                            node(schedule),
+                            schedule
+                        );
+                    }
                 }
-                for eval in &summary.evals {
-                    println!("  {agent_node} --> eval_{}[\"eval:{}\"]", node(eval), eval);
+                if matches!(command.mode, GraphMode::All | GraphMode::Approvals) {
+                    for (tool, approval) in &summary.approvals {
+                        println!(
+                            "  {agent_node} --> approval_{}_{}[\"approval:{}:{}\"]",
+                            node(tool),
+                            node(approval),
+                            tool,
+                            approval
+                        );
+                    }
                 }
-                for (memory, version) in &summary.memory {
-                    println!(
-                        "  {agent_node} --> memory_{}[\"memory:{}@{}\"]",
-                        node(memory),
-                        memory,
-                        version
-                    );
+                if matches!(command.mode, GraphMode::All) {
+                    for eval in &summary.evals {
+                        println!("  {agent_node} --> eval_{}[\"eval:{}\"]", node(eval), eval);
+                    }
+                    for (memory, version) in &summary.memory {
+                        println!(
+                            "  {agent_node} --> memory_{}[\"memory:{}@{}\"]",
+                            node(memory),
+                            memory,
+                            version
+                        );
+                    }
                 }
             }
         }
         GraphFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&summaries)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&graph_json(&summaries, &command.mode))?
+            );
         }
     }
 
     Ok(())
+}
+
+fn graph_json(summaries: &[AgentSummary], mode: &GraphMode) -> serde_json::Value {
+    let agents = summaries
+        .iter()
+        .map(|summary| match mode {
+            GraphMode::All => serde_json::to_value(summary).expect("summary serializes"),
+            GraphMode::Topology => serde_json::json!({
+                "name": summary.name,
+                "subagents": summary.subagents,
+                "skills": summary.skills,
+                "schedules": summary.schedules,
+            }),
+            GraphMode::Tools => serde_json::json!({
+                "name": summary.name,
+                "tools": summary.tools,
+            }),
+            GraphMode::Approvals => serde_json::json!({
+                "name": summary.name,
+                "approvals": summary.approvals,
+            }),
+            GraphMode::Runtime => serde_json::json!({
+                "name": summary.name,
+                "runtime_policy": summary.runtime_policy,
+                "subagents": summary.subagents.iter().map(|subagent| serde_json::json!({
+                    "name": subagent.name,
+                    "runtime_policy": subagent.runtime_policy,
+                })).collect::<Vec<_>>(),
+            }),
+            GraphMode::Channels => serde_json::json!({
+                "name": summary.name,
+                "channels": summary.channels,
+            }),
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "mode": graph_mode_name(mode),
+        "agents": agents,
+    })
+}
+
+fn graph_mode_name(mode: &GraphMode) -> &'static str {
+    match mode {
+        GraphMode::All => "all",
+        GraphMode::Topology => "topology",
+        GraphMode::Tools => "tools",
+        GraphMode::Approvals => "approvals",
+        GraphMode::Runtime => "runtime",
+        GraphMode::Channels => "channels",
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3202,11 +3529,185 @@ agents:
         )
     }
 
+    fn policy_manifest() -> FleetManifest {
+        manifest(
+            r#"
+defaults:
+  model: openai/gpt-5.5
+  owner: agent-platform
+  channels: [web]
+  evals: [standard]
+agents:
+  - name: platform
+    version: 1.0.0
+    responsibility: Coordinate platform work.
+    tools:
+      search_customers: 1.0.0
+    x_runtime_policy:
+      sandbox: network-read
+      allowed_tools: [search_customers]
+    subagents:
+      - name: reviewer
+        title: Release Reviewer
+        role_id: role.review
+        responsibility: Review release readiness.
+        model: openai/gpt-5.5-mini
+        tools: [search_customers]
+        runtime_policy:
+          sandbox: network-read
+          allowed_tools: [search_customers]
+"#,
+        )
+    }
+
     #[test]
     fn valid_manifest_resolves_against_catalog() {
         let report = validate_manifest(&valid_manifest(), &valid_catalog());
 
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn subagent_objects_render_role_specific_artifacts() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let manifest = policy_manifest();
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &valid_catalog())
+            .expect("agent renders");
+
+        assert!(files.iter().any(|file| {
+            file.path.ends_with("subagents/reviewer/instructions.md")
+                && file.content.contains("# Release Reviewer")
+                && file.content.contains("Role id: `role.review`")
+                && file.content.contains("Sandbox: `network-read`")
+        }));
+        assert!(files.iter().any(|file| {
+            file.path.ends_with("subagents/reviewer/agent.ts")
+                && file.content.contains("model: \"openai/gpt-5.5-mini\"")
+        }));
+    }
+
+    #[test]
+    fn runtime_policy_rejects_write_tool_in_read_sandbox() {
+        let mut manifest = valid_manifest();
+        manifest.agents[0].x_runtime_policy = Some(RuntimePolicy {
+            sandbox: Some("read-only".to_string()),
+            allowed_tools: vec!["prepare_refund".to_string()],
+            approvals: Vec::new(),
+            forbidden_actions: Vec::new(),
+        });
+
+        let report = validate_manifest(&manifest, &valid_catalog());
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.contains(
+                    "runtime policy sandbox 'read-only' is incompatible with tool 'prepare_refund'",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn catalog_tool_contract_metadata_renders_into_placeholder() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let manifest = valid_manifest();
+        let mut catalog = valid_catalog();
+        let tool = catalog.tools.get_mut("search_customers").expect("tool");
+        tool.required_env = vec!["CRM_READ_TOKEN".to_string()];
+        tool.required_connectors = vec!["crm".to_string()];
+        tool.sandbox_compatibility = vec!["network-read".to_string()];
+        tool.failure_modes = vec!["crm_unavailable".to_string()];
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &catalog)
+            .expect("agent renders");
+
+        let tool_file = files
+            .iter()
+            .find(|file| file.path.ends_with("tools/search_customers.ts"))
+            .expect("tool file");
+        assert!(
+            tool_file
+                .content
+                .contains("requiredEnv: [\"CRM_READ_TOKEN\"]")
+        );
+        assert!(tool_file.content.contains("requiredConnectors: [\"crm\"]"));
+        assert!(
+            tool_file
+                .content
+                .contains("sandboxCompatibility: [\"network-read\"]")
+        );
+        assert!(
+            tool_file
+                .content
+                .contains("failureModes: [\"crm_unavailable\"]")
+        );
+    }
+
+    #[test]
+    fn tool_contract_metadata_is_rendered_as_safe_ts_literals() {
+        let renderer = Renderer::load(Path::new("templates/agent")).expect("renderer loads");
+        let manifest = valid_manifest();
+        let mut catalog = valid_catalog();
+        let tool = catalog.tools.get_mut("search_customers").expect("tool");
+        tool.description = Some("Read \"quoted\" customer data".to_string());
+        tool.required_env = vec!["CRM_\"TOKEN\"".to_string()];
+        tool.failure_modes = vec!["path\\missing".to_string()];
+        let files = renderer
+            .render_agent(&manifest.agents[0], &manifest, &catalog)
+            .expect("agent renders");
+
+        let tool_file = files
+            .iter()
+            .find(|file| file.path.ends_with("tools/search_customers.ts"))
+            .expect("tool file");
+        assert!(
+            tool_file
+                .content
+                .contains(r#"description: "Read \"quoted\" customer data Side effects: read.""#)
+        );
+        assert!(
+            tool_file
+                .content
+                .contains(r#"requiredEnv: ["CRM_\"TOKEN\""]"#)
+        );
+        assert!(
+            tool_file
+                .content
+                .contains(r#"failureModes: ["path\\missing"]"#)
+        );
+    }
+
+    #[test]
+    fn generated_manifest_and_lockfile_include_subagent_policy_metadata() {
+        let manifest = policy_manifest();
+        let agent_manifest = render_agent_manifest(&manifest.agents[0], &manifest);
+        let lockfile = render_versions_lock(&manifest.agents[0], &manifest, &valid_catalog());
+
+        assert!(agent_manifest.contains("subagents:"));
+        assert!(agent_manifest.contains("name: reviewer"));
+        assert!(agent_manifest.contains("runtime_policy:"));
+        assert!(agent_manifest.contains("sandbox: network-read"));
+        assert!(lockfile.contains("manifest/subagents/reviewer@manifest"));
+    }
+
+    #[test]
+    fn graph_json_honors_mode() {
+        let manifest = policy_manifest();
+        let summary = summarize_agent(
+            &manifest.agents[0],
+            &manifest,
+            &valid_catalog(),
+            Path::new("templates/agent"),
+        )
+        .expect("summary");
+        let output = graph_json(&[summary], &GraphMode::Runtime);
+
+        assert_eq!(output["mode"], "runtime");
+        assert!(output["agents"][0].get("runtime_policy").is_some());
+        assert!(output["agents"][0].get("tools").is_none());
     }
 
     #[test]

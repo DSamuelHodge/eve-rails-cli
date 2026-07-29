@@ -96,6 +96,16 @@ pub(super) fn run_doctor(
         "memory schemas declare retention",
         "one or more memory schemas are missing retention",
     );
+    push_check(
+        &mut checks,
+        "runtime-policy",
+        validation
+            .errors
+            .iter()
+            .all(|error| !error.contains("runtime policy")),
+        "runtime policies are compatible with tools, sandboxes, and approvals",
+        "one or more runtime policies are incompatible with tools, sandboxes, or approvals",
+    );
 
     if command.templates {
         add_template_checks(&mut checks, manifest, catalog, &command.template_dir)?;
@@ -278,11 +288,9 @@ pub(super) fn add_channel_config_checks(
                         push_env_if_missing(&mut missing_env, "TELEGRAM_WEBHOOK_SECRET_TOKEN");
                     }
                 }
-                "teams" => {
-                    if check_env {
-                        push_env_if_missing(&mut missing_env, "MICROSOFT_APP_ID");
-                        push_env_if_missing(&mut missing_env, "MICROSOFT_APP_PASSWORD");
-                    }
+                "teams" if check_env => {
+                    push_env_if_missing(&mut missing_env, "MICROSOFT_APP_ID");
+                    push_env_if_missing(&mut missing_env, "MICROSOFT_APP_PASSWORD");
                 }
                 _ => {}
             }
@@ -592,6 +600,12 @@ pub(super) fn validate_manifest(
                 "tool '{tool}' explicitly declares side_effects: none; verify this is intentional"
             ));
         }
+        for approval in &component.required_approvals {
+            validate_policy(&mut report, &format!("tool '{tool}'"), approval, catalog);
+        }
+        for sandbox in &component.sandbox_compatibility {
+            validate_sandbox(&mut report, &format!("tool '{tool}'"), sandbox);
+        }
     }
 
     for agent in &manifest.agents {
@@ -630,6 +644,16 @@ pub(super) fn validate_manifest(
             report
                 .warnings
                 .push(format!("agent '{}' has no evals", agent.name));
+        }
+        if let Some(policy) = &agent.x_runtime_policy {
+            validate_runtime_policy(
+                &mut report,
+                &format!("agent '{}'", agent.name),
+                policy,
+                &agent.tools,
+                &agent.approvals,
+                catalog,
+            );
         }
         validate_named_list(
             &mut report,
@@ -695,6 +719,16 @@ pub(super) fn validate_manifest(
                     agent.name, tool
                 ));
             }
+            if let Some(component) = catalog.tools.get(tool) {
+                for approval in &component.required_approvals {
+                    if !agent.approvals.values().any(|policy| policy == approval) {
+                        report.errors.push(format!(
+                            "agent '{}' tool '{}' requires approval policy '{}'",
+                            agent.name, tool, approval
+                        ));
+                    }
+                }
+            }
         }
 
         for (skill, version) in &agent.skills {
@@ -755,9 +789,176 @@ pub(super) fn validate_manifest(
                 catalog,
             );
         }
+
+        for subagent in &agent.subagents {
+            if subagent.name.trim().is_empty() {
+                report.errors.push(format!(
+                    "agent '{}' subagent name cannot be empty",
+                    agent.name
+                ));
+            }
+            if !is_slug(&subagent.name) {
+                report.errors.push(format!(
+                    "agent '{}' subagent '{}' must use lowercase kebab-case or snake_case",
+                    agent.name, subagent.name
+                ));
+            }
+            validate_named_list(
+                &mut report,
+                &format!("agent '{}' subagent '{}'", agent.name, subagent.name),
+                "tool",
+                &subagent.tools,
+                &catalog.tools,
+            );
+            validate_named_list(
+                &mut report,
+                &format!("agent '{}' subagent '{}'", agent.name, subagent.name),
+                "skill",
+                &subagent.skills,
+                &catalog.skills,
+            );
+            validate_named_list(
+                &mut report,
+                &format!("agent '{}' subagent '{}'", agent.name, subagent.name),
+                "memory",
+                &subagent.memory,
+                &catalog.memory,
+            );
+            validate_named_list(
+                &mut report,
+                &format!("agent '{}' subagent '{}'", agent.name, subagent.name),
+                "channel",
+                &subagent.channels,
+                &catalog.channels,
+            );
+            for policy in subagent.approvals.values() {
+                validate_policy(
+                    &mut report,
+                    &format!("agent '{}' subagent '{}'", agent.name, subagent.name),
+                    policy,
+                    catalog,
+                );
+            }
+            if let Some(policy) = &subagent.runtime_policy {
+                let tools = subagent
+                    .tools
+                    .iter()
+                    .map(|tool| (tool.clone(), "catalog".to_string()))
+                    .collect::<ComponentMap>();
+                validate_runtime_policy(
+                    &mut report,
+                    &format!("agent '{}' subagent '{}'", agent.name, subagent.name),
+                    policy,
+                    &tools,
+                    &subagent.approvals,
+                    catalog,
+                );
+            }
+        }
     }
 
     report
+}
+
+pub(super) fn validate_runtime_policy(
+    report: &mut ValidationReport,
+    scope: &str,
+    policy: &RuntimePolicy,
+    tools: &ComponentMap,
+    approvals: &BTreeMap<String, String>,
+    catalog: &CatalogManifest,
+) {
+    let sandbox = policy.sandbox.as_deref().unwrap_or("read-only");
+    validate_sandbox(report, scope, sandbox);
+
+    for tool in &policy.allowed_tools {
+        if !tools.contains_key(tool) {
+            report.errors.push(format!(
+                "{scope} runtime policy allows tool '{tool}' that is not declared"
+            ));
+        }
+    }
+
+    for approval in &policy.approvals {
+        validate_policy(report, scope, approval, catalog);
+    }
+
+    for tool in tools.keys() {
+        let Some(component) = catalog.tools.get(tool) else {
+            continue;
+        };
+        if !tool_allowed_by_sandbox(component.side_effects.as_ref(), sandbox) {
+            report.errors.push(format!(
+                "{scope} runtime policy sandbox '{sandbox}' is incompatible with tool '{tool}'"
+            ));
+        }
+        if !component.sandbox_compatibility.is_empty()
+            && !component
+                .sandbox_compatibility
+                .iter()
+                .any(|compatible| compatible == sandbox)
+        {
+            report.errors.push(format!(
+                "{scope} runtime policy sandbox '{sandbox}' is not listed in tool '{tool}' sandbox_compatibility"
+            ));
+        }
+        if is_risky_side_effect(component.side_effects.as_ref())
+            && !approvals.contains_key(tool)
+            && policy.approvals.is_empty()
+        {
+            report.errors.push(format!(
+                "{scope} runtime policy grants non-read tool '{tool}' without approval coverage"
+            ));
+        }
+    }
+}
+
+pub(super) fn validate_sandbox(report: &mut ValidationReport, scope: &str, sandbox: &str) {
+    const SANDBOXES: &[&str] = &[
+        "read-only",
+        "network-read",
+        "workspace-write",
+        "external-write-gated",
+        "production-write-gated",
+        "approval-gated",
+    ];
+    if !SANDBOXES.contains(&sandbox) {
+        report.errors.push(format!(
+            "{scope} references unsupported runtime policy sandbox '{sandbox}'"
+        ));
+    }
+}
+
+fn tool_allowed_by_sandbox(side_effects: Option<&SideEffects>, sandbox: &str) -> bool {
+    match side_effects.unwrap_or(&SideEffects::Read) {
+        SideEffects::None | SideEffects::Read => true,
+        SideEffects::Write => matches!(
+            sandbox,
+            "workspace-write"
+                | "external-write-gated"
+                | "production-write-gated"
+                | "approval-gated"
+        ),
+        SideEffects::External => matches!(
+            sandbox,
+            "external-write-gated" | "production-write-gated" | "approval-gated"
+        ),
+        SideEffects::Money | SideEffects::Production => {
+            matches!(sandbox, "production-write-gated" | "approval-gated")
+        }
+    }
+}
+
+fn is_risky_side_effect(side_effects: Option<&SideEffects>) -> bool {
+    matches!(
+        side_effects,
+        Some(
+            SideEffects::Write
+                | SideEffects::External
+                | SideEffects::Money
+                | SideEffects::Production
+        )
+    )
 }
 
 pub(super) fn validate_policy(
